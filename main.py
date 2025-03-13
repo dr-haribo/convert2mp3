@@ -4,11 +4,14 @@ Python GUI application to download audio from YouTube videos as MP3 files.
 import os
 import logging
 import threading
+import requests
 import tkinter as tk
 from tkinter import messagebox, filedialog, PhotoImage, ttk
 from PIL import ImageTk, Image
 import yt_dlp
 from mutagen.easyid3 import EasyID3
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, APIC
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(filename="app.log", level=logging.DEBUG, format="%(asctime)s:%(levelname)s:%(message)s")
@@ -30,11 +33,11 @@ class MyGUI:
         self.root.configure(bg="#BFBFBF")
 
         # Set window icon
-        #self.logo = PhotoImage(file="media/logo.png")
-        #self.root.iconphoto(False, self.logo)
-        #self.logo = Image.open("media/logo.png")
-        #self.logo = self.logo.resize((50, 50), Image.Resampling.LANCZOS)
-        #self.logo = ImageTk.PhotoImage(self.logo)
+        self.logo = PhotoImage(file="media/logo.png")
+        self.root.iconphoto(False, self.logo)
+        self.logo = Image.open("media/logo.png")
+        self.logo = self.logo.resize((50, 50), Image.Resampling.LANCZOS)
+        self.logo = ImageTk.PhotoImage(self.logo)
 
         frame = tk.Frame(self.root, bg="#BFBFBF")
         frame.pack(anchor="center")
@@ -81,7 +84,6 @@ class MyGUI:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         logger.info("Application started.")
-        self.progressbar.start()
         self.root.mainloop()
         
 
@@ -98,21 +100,23 @@ class MyGUI:
             os.makedirs(output_folder)
 
         output_template = f'{output_folder}/%(title)s.%(ext)s'
-        #See help(yt_dlp.postprocessor) for a list of available Postprocessors and their arguments
         ydl_opts = {
             'format': 'bestaudio/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '128',  # Reduced quality for faster conversion
+                'preferredquality': '128',
             }],
             'outtmpl': output_template,
-            'postprocessor_args': ['-preset', 'ultrafast'],  # Speed up processing
+            'postprocessor_args': ['-preset', 'ultrafast'],
         }
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
+
+                 
+
                 if '_type' in info and info['_type'] == 'playlist':
                     for entry in info['entries']:
                         filename = ydl.prepare_filename(entry).replace(".webm", ".mp3").replace(".m4a", ".mp3")
@@ -121,6 +125,8 @@ class MyGUI:
                         audio["album"] = album
                         audio["title"] = entry.get("title", "Unknown Title")
                         audio.save()
+                        
+
                 else:
                     filename = ydl.prepare_filename(info).replace(".webm", ".mp3").replace(".m4a", ".mp3")
 
@@ -131,12 +137,56 @@ class MyGUI:
                     audio["title"] = info.get("title", "Unknown Title")
                     audio.save()
 
-            messagebox.showinfo("Success", "Download complete with metadata!")
+                    # Save the thumbnail
+                    thumbnail_path = self.save_thumbnail(info) 
+                    audio_file = MP3(filename, ID3=ID3)
+                    with open(thumbnail_path, "rb") as img:
+                        audio_file.tags.add(
+                            APIC(
+                                encoding=3, 
+                                mime="image/jpeg",
+                                type=3,  
+                                desc="Cover",
+                                data=img.read(),
+                            )
+                        )
+                    audio_file.save()
+                    os.remove(thumbnail_path)
+
+            messagebox.showinfo("Success", "Download complete with metadata and thumbnail!")
             logger.info(f"Successfully downloaded audio from {video_url} to {output_folder}")
             self.progressbar.stop()
         except Exception as e:
             messagebox.showerror("Error", f"Download failed: {e}")
             logger.error(f"Download failed: {e}")
+
+    def save_thumbnail(self, info):
+        """
+        Downloads a thumbnail image from a URL and saves it to the selected download folder.
+
+        :param info: Dictionary containing video information (including the thumbnail URL).
+        :return: Path to the saved thumbnail file (or None if failed).
+        """
+        try:
+            if "thumbnail" in info:
+                thumbnail_url = info["thumbnail"]
+                thumbnail_name = f"{info['title']}.jpg"
+                thumbnail_path = os.path.join(self.download_directory, thumbnail_name)
+
+                thumbnail = requests.get(thumbnail_url, stream=True)
+                if thumbnail.status_code == 200:
+                    with open(thumbnail_path, "wb") as file:
+                        for chunk in thumbnail.iter_content(1024):
+                            file.write(chunk)
+                    logger.info(f"Thumbnail saved: {thumbnail_path}")
+                    return thumbnail_path
+        except Exception as e:
+            logger.error(f"Failed to save thumbnail: {e}")
+            return None
+
+                
+
+
     def set_destination_folder(self):
         """
         Clearing the entry fields
@@ -156,8 +206,10 @@ class MyGUI:
             self.progressbar.start()
             download_thread = threading.Thread(target=self.download_audio, args=(video_url, self.download_directory, artist, album))
             download_thread.start() 
+            
         else:
             messagebox.showwarning("Warning", "Please enter a valid YouTube URL.")
+
     def clear(self):
         """
         clear the entry fields
