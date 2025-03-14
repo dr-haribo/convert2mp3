@@ -125,6 +125,7 @@ class MyGUI:
                         audio["album"] = album
                         audio["title"] = entry.get("title", "Unknown Title")
                         audio.save()
+                        thumbnail_path = self.save_thumbnail(entry, filename)
                         
 
                 else:
@@ -138,7 +139,43 @@ class MyGUI:
                     audio.save()
 
                     # Save the thumbnail
-                    thumbnail_path = self.save_thumbnail(info) 
+                    thumbnail_path = self.save_thumbnail(info, filename) 
+                    
+
+            messagebox.showinfo("Success", "Download complete with metadata and thumbnail!")
+            logger.info(f"Successfully downloaded audio from {video_url} to {output_folder}")
+            self.progressbar.stop()
+        except Exception as e:
+            messagebox.showerror("Error", f"Download failed: {e}")
+            logger.error(f"Download failed: {e}")
+
+    def save_thumbnail(self, info, filename):
+        """
+        Downloads a thumbnail image from a URL and saves it to the selected download folder.
+
+        :param info: Dictionary containing video information (including the thumbnail URL).
+        :return: Path to the saved thumbnail file (or None if failed).
+        """
+        
+        try:
+            if "thumbnail" in info:
+                thumbnail_url = info["thumbnail"]
+                thumbnail_name = f"{info['title']}.jpg"
+                thumbnail_name = thumbnail_name.replace(" ", "_")
+                thumbnail_path = os.path.join(self.download_directory, thumbnail_name)
+
+                thumbnail = requests.get(thumbnail_url, stream=True)
+                if thumbnail.status_code == 200:
+                    with open(thumbnail_path, "wb") as file:
+                        for chunk in thumbnail.iter_content(1024):
+                            file.write(chunk)
+                    
+                    # Resize the image to max 500x500 pixels
+                    img = Image.open(thumbnail_path)
+                    img.thumbnail((500, 500))
+                    img.save(thumbnail_path, "JPEG", quality=85)
+
+                    logger.info(f"Thumbnail saved and resized: {thumbnail_path}")
                     audio_file = MP3(filename, ID3=ID3)
                     # Ensure the file has ID3 tags
                     try:
@@ -157,41 +194,6 @@ class MyGUI:
                         )
                     audio_file.save(v2_version=3)
                     os.remove(thumbnail_path)
-
-            messagebox.showinfo("Success", "Download complete with metadata and thumbnail!")
-            logger.info(f"Successfully downloaded audio from {video_url} to {output_folder}")
-            self.progressbar.stop()
-        except Exception as e:
-            messagebox.showerror("Error", f"Download failed: {e}")
-            logger.error(f"Download failed: {e}")
-
-    def save_thumbnail(self, info):
-        """
-        Downloads a thumbnail image from a URL and saves it to the selected download folder.
-
-        :param info: Dictionary containing video information (including the thumbnail URL).
-        :return: Path to the saved thumbnail file (or None if failed).
-        """
-        
-        try:
-            if "thumbnail" in info:
-                thumbnail_url = info["thumbnail"]
-                thumbnail_name = f"{info['title']}.jpg"
-                thumbnail_path = os.path.join(self.download_directory, thumbnail_name)
-
-                thumbnail = requests.get(thumbnail_url, stream=True)
-                if thumbnail.status_code == 200:
-                    with open(thumbnail_path, "wb") as file:
-                        for chunk in thumbnail.iter_content(1024):
-                            file.write(chunk)
-                    
-                    # Resize the image to max 500x500 pixels
-                    img = Image.open(thumbnail_path)
-                    img.thumbnail((500, 500))
-                    img.save(thumbnail_path, "JPEG", quality=85)
-
-                    logger.info(f"Thumbnail saved and resized: {thumbnail_path}")
-                    return thumbnail_path
         except Exception as e:
             logger.error(f"Failed to save thumbnail: {e}")
             return None
