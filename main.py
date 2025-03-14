@@ -140,6 +140,11 @@ class MyGUI:
                     # Save the thumbnail
                     thumbnail_path = self.save_thumbnail(info) 
                     audio_file = MP3(filename, ID3=ID3)
+                    # Ensure the file has ID3 tags
+                    try:
+                        audio_file.add_tags()
+                    except Exception:
+                        pass
                     with open(thumbnail_path, "rb") as img:
                         audio_file.tags.add(
                             APIC(
@@ -150,7 +155,7 @@ class MyGUI:
                                 data=img.read(),
                             )
                         )
-                    audio_file.save()
+                    audio_file.save(v2_version=3)
                     os.remove(thumbnail_path)
 
             messagebox.showinfo("Success", "Download complete with metadata and thumbnail!")
@@ -167,6 +172,7 @@ class MyGUI:
         :param info: Dictionary containing video information (including the thumbnail URL).
         :return: Path to the saved thumbnail file (or None if failed).
         """
+        
         try:
             if "thumbnail" in info:
                 thumbnail_url = info["thumbnail"]
@@ -178,7 +184,13 @@ class MyGUI:
                     with open(thumbnail_path, "wb") as file:
                         for chunk in thumbnail.iter_content(1024):
                             file.write(chunk)
-                    logger.info(f"Thumbnail saved: {thumbnail_path}")
+                    
+                    # Resize the image to max 500x500 pixels
+                    img = Image.open(thumbnail_path)
+                    img.thumbnail((500, 500))
+                    img.save(thumbnail_path, "JPEG", quality=85)
+
+                    logger.info(f"Thumbnail saved and resized: {thumbnail_path}")
                     return thumbnail_path
         except Exception as e:
             logger.error(f"Failed to save thumbnail: {e}")
