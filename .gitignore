@@ -20,3 +20,6 @@ build/
 
 downloads
 .venv
+
+# Chrome extension signing key - keep this private, it pins the extension's ID
+chrome-extension/extension-private-key.pem

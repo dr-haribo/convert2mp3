@@ -3,6 +3,7 @@ Backend Server für die Chrome Extension
 Bietet eine REST API für die YouTube-zu-MP3 Konvertierung
 """
 import os
+import re
 import logging
 import threading
 from flask import Flask, request, jsonify
@@ -23,10 +24,40 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)  # Erlaube Cross-Origin Requests von der Extension
+# Only allow requests from this specific extension, not from arbitrary websites the
+# user happens to have open - this server has no auth and can trigger downloads
+# and filesystem writes, so it must not be reachable from normal http(s) origins.
+# The ID below is pinned via the "key" field in chrome-extension/manifest.json.
+EXTENSION_ID = "ndceendcjncnppkaeidbplbbhaadaing"
+CORS(app, origins=[f"chrome-extension://{EXTENSION_ID}"])
+
+BASE_DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+
+YOUTUBE_URL_PATTERN = re.compile(
+    r'^(?:https?://)?(?:www\.)?(?:youtube\.com/(?:watch\?v=|playlist\?list=)[\w-]+|youtu\.be/[\w-]+)'
+)
 
 # Globale Variablen für Download-Status
 download_status = {}
+
+
+def is_valid_youtube_url(url):
+    """Validate that the URL points to YouTube, not an arbitrary host"""
+    return bool(YOUTUBE_URL_PATTERN.match(url))
+
+
+def resolve_download_folder(download_folder):
+    """
+    Resolve a user-supplied folder name to a path confined to BASE_DOWNLOAD_DIR.
+    Rejects absolute paths and '..' traversal so a request can't make the server
+    write files outside its own downloads directory.
+    """
+    download_folder = (download_folder or 'downloads').strip()
+    candidate = os.path.normpath(os.path.join(BASE_DOWNLOAD_DIR, download_folder))
+    base = os.path.normpath(BASE_DOWNLOAD_DIR)
+    if candidate != base and not candidate.startswith(base + os.sep):
+        return None
+    return candidate
 
 
 def sanitize_filename(filename):
@@ -171,13 +202,15 @@ def convert():
         
         if not video_url:
             return jsonify({'success': False, 'error': 'Keine URL angegeben'}), 400
-        
-        # Resolve download folder path
-        if not os.path.isabs(download_folder):
-            # Relative path - use project directory
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            download_folder = os.path.join(base_dir, download_folder)
-        
+
+        if not is_valid_youtube_url(video_url):
+            return jsonify({'success': False, 'error': 'Ungültige YouTube-URL'}), 400
+
+        # Resolve download folder path, confined to BASE_DOWNLOAD_DIR
+        download_folder = resolve_download_folder(download_folder)
+        if download_folder is None:
+            return jsonify({'success': False, 'error': 'Ungültiger Download-Ordner'}), 400
+
         # Generate download ID
         import uuid
         download_id = str(uuid.uuid4())

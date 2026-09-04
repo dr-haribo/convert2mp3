@@ -365,21 +365,13 @@ class MyGUI:
         elif self.use_cookie_file.get():
             cookie_path = self.cookie_file_path.get()
             if cookie_path:
-                try:
-                    with open(cookie_path, 'r') as f:
-                        cookie_data = f.read()
-                    common_opts['cookies'] = cookie_data
-                    logger.info(f"Using cookie file from: {cookie_path}")
-                except FileNotFoundError:
+                if not os.path.isfile(cookie_path):
                     error_msg = f"Cookie file not found at: {cookie_path}\nPlease select a valid cookie file."
                     messagebox.showerror("Cookie Error", error_msg)
                     logger.error(f"Cookie file not found: {cookie_path}")
                     return
-                except Exception as e:
-                    error_msg = f"Error reading cookie file {cookie_path}: {str(e)}\nPlease ensure it's a valid cookie file."
-                    messagebox.showerror("Cookie Error", error_msg)
-                    logger.error(f"Error reading cookie file {cookie_path}: {e}")
-                    return
+                common_opts['cookiefile'] = cookie_path
+                logger.info(f"Using cookie file from: {cookie_path}")
             else:
                 error_msg = "Please select a cookie file path."
                 messagebox.showerror("Cookie Error", error_msg)
@@ -757,21 +749,13 @@ class MyGUI:
                 elif self.use_cookie_file.get():
                     cookie_path = self.cookie_file_path.get()
                     if cookie_path:
-                        try:
-                            with open(cookie_path, 'r') as f:
-                                cookie_data = f.read()
-                            ydl_opts['cookies'] = cookie_data
-                            logger.info(f"Using cookie file for format check: {cookie_path}")
-                        except FileNotFoundError:
+                        if not os.path.isfile(cookie_path):
                             error_msg = f"Cookie file not found at: {cookie_path}\nPlease select a valid cookie file."
                             messagebox.showerror("Cookie Error", error_msg)
                             logger.error(f"Cookie file not found for format check: {cookie_path}")
                             return
-                        except Exception as e:
-                            error_msg = f"Error reading cookie file {cookie_path} for format check: {str(e)}\nPlease ensure it's a valid cookie file."
-                            messagebox.showerror("Cookie Error", error_msg)
-                            logger.error(f"Error reading cookie file {cookie_path} for format check: {e}")
-                            return
+                        ydl_opts['cookiefile'] = cookie_path
+                        logger.info(f"Using cookie file for format check: {cookie_path}")
                     else:
                         error_msg = "Please select a cookie file path for format check."
                         messagebox.showerror("Cookie Error", error_msg)
@@ -802,13 +786,8 @@ class MyGUI:
                     ydl_opts['cookiesfrombrowser'] = ('chrome',)
                 elif self.use_cookie_file.get():
                     cookie_path = self.cookie_file_path.get()
-                    if cookie_path:
-                        try:
-                            with open(cookie_path, 'r') as f:
-                                cookie_data = f.read()
-                            ydl_opts['cookies'] = cookie_data
-                        except:
-                            pass
+                    if cookie_path and os.path.isfile(cookie_path):
+                        ydl_opts['cookiefile'] = cookie_path
                 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(video_url, download=False)
@@ -961,17 +940,11 @@ class MyGUI:
                 logger.info("Testing YouTube access with browser cookies")
             elif self.use_cookie_file.get():
                 cookie_path = self.cookie_file_path.get()
-                if cookie_path:
-                    try:
-                        with open(cookie_path, 'r') as f:
-                            cookie_data = f.read()
-                        ydl_opts['cookies'] = cookie_data
-                        logger.info(f"Testing YouTube access with cookie file: {cookie_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to read cookie file: {e}")
-                        # Continue without cookies
+                if cookie_path and os.path.isfile(cookie_path):
+                    ydl_opts['cookiefile'] = cookie_path
+                    logger.info(f"Testing YouTube access with cookie file: {cookie_path}")
                 else:
-                    logger.info("Testing YouTube access without cookies (no cookie file path)")
+                    logger.info("Testing YouTube access without cookies (no valid cookie file path)")
             else:
                 logger.info("Testing YouTube access without cookies")
             

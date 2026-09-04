@@ -3,6 +3,7 @@
   "name": "Convert2MP3 - YouTube Downloader",
   "version": "1.0.0",
   "description": "Konvertiere YouTube-Videos direkt zu MP3",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoIqMC+sjeXarS7UV5vSu0kcy3Xa2Hbv6Ex8T+zBVGkWxr8mLMdFXLWbD+6pHtIRQmFVXrL5i6YifKCzWstLXxRVV5DofaabknlPEAH6cvuVU4vaMOtrw2X3cVGXPvc2lG/CpNhJq2UJ+4SHrCrowRc8GH7myntCJlde7iN4eRoKH2xH46JRkKUfUTyUWpcohztZRBH5npuoYR5VBWXYIj31AbKbqhWiols2dI95QI5kdXQ+W0ZRMYVsARNy2AC36AdclgjLssuupp+4M7GmEvY6xyorUIE3I1eIWHXeSCvlnaFApp3/+/kHzC0FCTSFvz+5QOkAk5ryObSX44iwh2wIDAQAB",
   "permissions": [
     "activeTab",
     "storage",
