@@ -31,7 +31,7 @@ app = Flask(__name__)
 EXTENSION_ID = "ndceendcjncnppkaeidbplbbhaadaing"
 CORS(app, origins=[f"chrome-extension://{EXTENSION_ID}"])
 
-BASE_DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+BASE_DOWNLOAD_DIR = os.path.dirname(os.path.abspath(__file__))
 
 YOUTUBE_URL_PATTERN = re.compile(
     r'^(?:https?://)?(?:www\.)?(?:youtube\.com/(?:watch\?v=|playlist\?list=)[\w-]+|youtu\.be/[\w-]+)'
