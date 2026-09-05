@@ -2,8 +2,11 @@
 Python GUI application to download audio from YouTube videos as MP3 files.
 """
 import os
+import sys
+import json
 import logging
 import threading
+import subprocess
 import requests
 import tkinter as tk
 from tkinter import messagebox, filedialog, PhotoImage, ttk
@@ -18,12 +21,48 @@ import queue
 logger = logging.getLogger(__name__)
 logging.basicConfig(filename="app.log", level=logging.DEBUG, format="%(asctime)s:%(levelname)s:%(message)s")
 
+SETTINGS_PATH = os.path.expanduser("~/.convert2mp3_settings.json")
+
+SETTINGS_DEFAULTS = {
+    'download_directory': '',
+    'artist': '',
+    'album': '',
+    'quality': '128',
+    'conversion_speed': 'fast',
+    'fast_download': True,
+    'use_cookies': False,
+    'use_cookie_file': False,
+    'cookie_file_path': '',
+    'format': 'auto',
+}
+
+
+def load_settings():
+    """Load persisted GUI settings, falling back to defaults if missing/corrupt"""
+    settings = SETTINGS_DEFAULTS.copy()
+    try:
+        with open(SETTINGS_PATH, 'r') as f:
+            saved = json.load(f)
+        settings.update({k: v for k, v in saved.items() if k in settings})
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return settings
+
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS_PATH, 'w') as f:
+            json.dump(settings, f, indent=2)
+    except OSError as e:
+        logger.error(f"Failed to save settings: {e}")
+
 class MyGUI:
     """
     class for the GUI and application logic
     """
     def __init__(self):
         self.root = tk.Tk()
+        settings = load_settings()
 
         self.style = ttk.Style()
         self.style.configure("TProgressbar", troughcolor="white", background="#BFBFBF", thickness=10)
@@ -92,7 +131,7 @@ class MyGUI:
         image_label.pack(side="top", anchor="center")
         tk.Label(header_frame, text="Convert2mp3", bg=BG, fg=ACCENT, font=("Helvetica", 15, "bold")).pack(side="top", anchor="center")
 
-        self.download_directory = ""
+        self.download_directory = settings['download_directory']
         self.downloading = False
         self.cancel_download = False
         self.in_postprocessing = False
@@ -102,12 +141,12 @@ class MyGUI:
         content_frame = tk.Frame(self.scrollable_frame, bg=BG)
         content_frame.pack(fill="both", expand=False, padx=20, pady=10)
 
-        tk.Label(content_frame, text="Enter YouTube URL:", bg=BG, fg="black", font=FONT_LABEL).pack(pady=(0, 4), anchor="w")
-        self.url_entry = tk.Entry(content_frame, width=50)
-        self.url_entry.pack(pady=(0, SECTION_GAP))
+        tk.Label(content_frame, text="Enter YouTube URL(s), one per line:", bg=BG, fg="black", font=FONT_LABEL).pack(pady=(0, 4), anchor="w")
+        self.url_text = tk.Text(content_frame, width=50, height=4, relief="sunken", bd=1)
+        self.url_text.pack(pady=(0, SECTION_GAP))
 
         tk.Label(content_frame, text="Destination Folder:", bg=BG, fg="black", font=FONT_LABEL).pack(pady=(0, 4), anchor="w")
-        self.destination_text = tk.Label(content_frame, width=60, text="please select a folder", font=("Helvetica", 10), relief="sunken", bg="white")
+        self.destination_text = tk.Label(content_frame, width=60, text=self.download_directory or "please select a folder", font=("Helvetica", 10), relief="sunken", bg="white")
         self.destination_text.pack(pady=(0, 6))
         self.destination_button = tk.Button(content_frame, text="Select Folder", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON_SMALL, command=self.set_destination_folder)
         self.destination_button.pack(pady=(0, SECTION_GAP))
@@ -117,47 +156,49 @@ class MyGUI:
         metadata_group.pack(fill="x", pady=(0, SECTION_GAP))
         tk.Label(metadata_group, text="Artist:", bg=BG, fg="black").pack(pady=(6, 2), anchor="w", padx=8)
         self.artist_entry = tk.Entry(metadata_group, width=48)
+        self.artist_entry.insert(0, settings['artist'])
         self.artist_entry.pack(pady=(0, 6), padx=8)
         tk.Label(metadata_group, text="Album:", bg=BG, fg="black").pack(pady=(0, 2), anchor="w", padx=8)
         self.album_entry = tk.Entry(metadata_group, width=48)
+        self.album_entry.insert(0, settings['album'])
         self.album_entry.pack(pady=(0, 8), padx=8)
 
         # Audio quality group
         quality_group = tk.LabelFrame(content_frame, text="Audio Quality", **GROUP_KW)
         quality_group.pack(fill="x", pady=(0, SECTION_GAP))
-        self.quality_var = tk.StringVar(value="128")
+        self.quality_var = tk.StringVar(value=settings['quality'])
         for text, value in (("128 kbps", "128"), ("192 kbps", "192"), ("320 kbps", "320")):
             tk.Radiobutton(quality_group, text=text, variable=self.quality_var, value=value, bg=BG).pack(side="left", padx=8, pady=6)
 
         # Conversion speed group
         speed_group = tk.LabelFrame(content_frame, text="Conversion Speed", **GROUP_KW)
         speed_group.pack(fill="x", pady=(0, SECTION_GAP))
-        self.conversion_speed = tk.StringVar(value="fast")
+        self.conversion_speed = tk.StringVar(value=settings['conversion_speed'])
         for text, value in (("Fast", "fast"), ("Balanced", "balanced"), ("High Quality", "quality")):
             tk.Radiobutton(speed_group, text=text, variable=self.conversion_speed, value=value, bg=BG).pack(side="left", padx=8, pady=6)
 
         # Format preference + fast-download behaviour group (these two settings interact)
         format_group = tk.LabelFrame(content_frame, text="Format & Download Behavior", **GROUP_KW)
         format_group.pack(fill="x", pady=(0, SECTION_GAP))
-        self.format_var = tk.StringVar(value="auto")
+        self.format_var = tk.StringVar(value=settings['format'])
         format_radios = tk.Frame(format_group, bg=BG)
         format_radios.pack(fill="x", padx=8, pady=(6, 2))
         for text, value in (("Auto (Smart)", "auto"), ("Direct (Fast)", "direct"), ("HLS (Compatible)", "hls")):
             tk.Radiobutton(format_radios, text=text, variable=self.format_var, value=value, bg=BG).pack(side="left")
-        self.fast_download = tk.BooleanVar(value=True)
+        self.fast_download = tk.BooleanVar(value=settings['fast_download'])
         tk.Checkbutton(format_group, text="Fast Download (avoid HLS)", variable=self.fast_download,
                        bg=BG, selectcolor=BTN_BG).pack(anchor="w", padx=8, pady=(0, 8))
 
         # Authentication group (cookies)
         auth_group = tk.LabelFrame(content_frame, text="Authentication (optional)", **GROUP_KW)
         auth_group.pack(fill="x", pady=(0, SECTION_GAP))
-        self.use_cookies = tk.BooleanVar(value=False)  # Default to False to avoid keychain requests
+        self.use_cookies = tk.BooleanVar(value=settings['use_cookies'])  # Default to False to avoid keychain requests
         tk.Checkbutton(auth_group, text="Use Browser Cookies (may require keychain access)",
                        variable=self.use_cookies, bg=BG, selectcolor=BTN_BG).pack(anchor="w", padx=8, pady=(6, 2))
-        self.use_cookie_file = tk.BooleanVar(value=False)
+        self.use_cookie_file = tk.BooleanVar(value=settings['use_cookie_file'])
         tk.Checkbutton(auth_group, text="Use Cookie File (manual export)",
                        variable=self.use_cookie_file, bg=BG, selectcolor=BTN_BG).pack(anchor="w", padx=8, pady=2)
-        self.cookie_file_path = tk.StringVar()
+        self.cookie_file_path = tk.StringVar(value=settings['cookie_file_path'])
         cookie_path_frame = tk.Frame(auth_group, bg=BG)
         cookie_path_frame.pack(fill="x", padx=8, pady=(2, 8))
         tk.Label(cookie_path_frame, text="Cookie File Path:", bg=BG, fg="black").pack(side="left")
@@ -233,6 +274,38 @@ class MyGUI:
         """Thread-safe way to update UI"""
         self.update_queue.put({'type': progress_type, **kwargs})
 
+    def _get_urls(self):
+        """Read the URL box, one URL per non-empty line"""
+        raw = self.url_text.get("1.0", tk.END)
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+
+    def _current_settings(self):
+        """Snapshot the current form values for persistence"""
+        return {
+            'download_directory': self.download_directory,
+            'artist': self.artist_entry.get().strip(),
+            'album': self.album_entry.get().strip(),
+            'quality': self.quality_var.get(),
+            'conversion_speed': self.conversion_speed.get(),
+            'fast_download': self.fast_download.get(),
+            'use_cookies': self.use_cookies.get(),
+            'use_cookie_file': self.use_cookie_file.get(),
+            'cookie_file_path': self.cookie_file_path.get(),
+            'format': self.format_var.get(),
+        }
+
+    def _open_folder(self, path):
+        """Open the given folder in the OS file manager"""
+        try:
+            if sys.platform == 'darwin':
+                subprocess.run(['open', path], check=False)
+            elif sys.platform == 'win32':
+                os.startfile(path)
+            else:
+                subprocess.run(['xdg-open', path], check=False)
+        except Exception as e:
+            logger.error(f"Failed to open folder {path}: {e}")
+
     def is_valid_youtube_url(self, url):
         """Validate YouTube URL format"""
         youtube_patterns = [
@@ -284,35 +357,18 @@ class MyGUI:
             **opts
         }
 
-    def download_audio(self, video_url, output_folder="/Desktop/downloads", artist="Unknown", album="Unknown"):
+    def download_audio(self, video_url, output_folder, artist="Unknown", album="Unknown"):
         """
-        Downloads the audio from a YouTube video as an MP3 file and sets metadata.
-        
+        Downloads the audio from a single YouTube video (or playlist) as MP3 file(s) and
+        sets metadata. Assumes output_folder has already been validated as writable by
+        the caller (download_queue), since that check only needs to happen once per batch.
+
         :param video_url: URL of the YouTube video.
         :param output_folder: Folder to save the MP3 file.
         :param artist: Artist name to set in metadata.
         :param album: Album name to set in metadata.
+        :return: True if the download succeeded, False otherwise.
         """
-        # Check if output directory is writable
-        try:
-            if not os.path.exists(output_folder):
-                os.makedirs(output_folder)
-            # Test write access by creating a temporary file
-            test_file = os.path.join(output_folder, ".test_write_access")
-            with open(test_file, 'w') as f:
-                f.write("test")
-            os.remove(test_file)
-        except PermissionError:
-            error_msg = f"Permission denied: Cannot write to '{output_folder}'\n\nThis usually means:\n1. The folder is on a read-only drive\n2. You don't have write permissions\n3. The drive is not properly mounted\n\nTry selecting a different folder (like Desktop or Documents)."
-            messagebox.showerror("Permission Error", error_msg)
-            logger.error(f"Permission denied for output folder: {output_folder}")
-            return
-        except Exception as e:
-            error_msg = f"Cannot access output folder '{output_folder}': {str(e)}\n\nPlease select a different folder."
-            messagebox.showerror("Folder Error", error_msg)
-            logger.error(f"Cannot access output folder {output_folder}: {e}")
-            return
-
         quality = self.quality_var.get()
         output_template = f'{output_folder}/%(title)s.%(ext)s'
 
@@ -346,14 +402,14 @@ class MyGUI:
                     error_msg = f"Cookie file not found at: {cookie_path}\nPlease select a valid cookie file."
                     messagebox.showerror("Cookie Error", error_msg)
                     logger.error(f"Cookie file not found: {cookie_path}")
-                    return
+                    return False
                 common_opts['cookiefile'] = cookie_path
                 logger.info(f"Using cookie file from: {cookie_path}")
             else:
                 error_msg = "Please select a cookie file path."
                 messagebox.showerror("Cookie Error", error_msg)
                 logger.error("No cookie file path selected.")
-                return
+                return False
         else:
             logger.info("Skipping browser cookies and cookie file to avoid keychain access")
 
@@ -420,10 +476,9 @@ class MyGUI:
 
                 # If we get here, download was successful
                 if not self.cancel_download:
-                    self._finish_download_ui()
-                    messagebox.showinfo("Success", f"Download complete with metadata and thumbnail!\nUsed method {i+1}")
                     logger.info(f"Successfully downloaded audio from {video_url} to {output_folder} using strategy {i+1}")
-                    return
+                    return True
+                return False
                     
             except yt_dlp.DownloadError as e:
                 error_msg = f"Strategy {i+1} failed: {str(e)}"
@@ -443,9 +498,10 @@ class MyGUI:
                     error_msg += "\n\nAll download methods failed. Try:\n1. Check if the video has audio content\n2. Try a different video\n3. Check available disk space\n4. Verify FFmpeg installation\n5. Try a different output folder\n6. Wait a bit before trying again (YouTube rate limiting)\n7. This video might only have images (no audio)"
                     messagebox.showerror("Download Error", error_msg)
                     logger.error(f"All download strategies failed for {video_url}")
+                    return False
                 else:
                     continue  # Try next strategy
-                    
+
             except Exception as e:
                 error_msg = f"Strategy {i+1} failed with unexpected error: {str(e)}"
                 if "permission" in str(e).lower():
@@ -458,11 +514,11 @@ class MyGUI:
                     error_msg += "\n\nAll download methods failed. This might be due to:\n- Unsupported audio format\n- Corrupted download\n- Insufficient disk space\n- Permission issues\n- YouTube authentication issues"
                     messagebox.showerror("Error", error_msg)
                     logger.error(f"All download strategies failed for {video_url}")
+                    return False
                 else:
                     continue  # Try next strategy
-                    
-        # Cleanup after all strategies are tried
-        self._finish_download_ui()
+
+        return False
 
     def progress_hook(self, d):
         """Progress hook for yt-dlp to update progress bar"""
@@ -552,33 +608,74 @@ class MyGUI:
 
     def start_download(self):
         """
-        starts the download process
+        starts the download process for one or more queued URLs
         """
-        video_url = self.url_entry.get().strip()
+        urls = self._get_urls()
         artist = self.artist_entry.get().strip()
         album = self.album_entry.get().strip()
-        
-        if not video_url:
-            messagebox.showwarning("Warning", "Please enter a YouTube URL.")
+
+        if not urls:
+            messagebox.showwarning("Warning", "Please enter at least one YouTube URL.")
             return
-            
-        if not self.is_valid_youtube_url(video_url):
-            messagebox.showerror("Error", "Please enter a valid YouTube URL.")
+
+        invalid_urls = [u for u in urls if not self.is_valid_youtube_url(u)]
+        if invalid_urls:
+            messagebox.showerror("Error", "Please fix the following invalid YouTube URL(s):\n" + "\n".join(invalid_urls))
             return
-            
+
         if not self.download_directory:
             messagebox.showerror("Error", "Please select a destination folder.")
             return
 
-        logging.info(f"Downloading audio from {video_url} to {self.download_directory}")
+        logging.info(f"Downloading {len(urls)} URL(s) to {self.download_directory}")
         self.progressbar['value'] = 0
         self.downloading = True
         self.cancel_download = False
         self.cancel_button.config(state="normal")
         self.download_button.config(state="disabled")
         self.update_progress('status', text="Starting download...")
-        download_thread = threading.Thread(target=self.download_audio, args=(video_url, self.download_directory, artist, album))
-        download_thread.start() 
+        download_thread = threading.Thread(target=self.download_queue, args=(urls, self.download_directory, artist, album))
+        download_thread.start()
+
+    def download_queue(self, urls, output_folder, artist, album):
+        """Download one or more YouTube URLs sequentially, then show a single summary"""
+        # Check if output directory is writable (once for the whole batch)
+        try:
+            if not os.path.exists(output_folder):
+                os.makedirs(output_folder)
+            test_file = os.path.join(output_folder, ".test_write_access")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+        except PermissionError:
+            error_msg = f"Permission denied: Cannot write to '{output_folder}'\n\nThis usually means:\n1. The folder is on a read-only drive\n2. You don't have write permissions\n3. The drive is not properly mounted\n\nTry selecting a different folder (like Desktop or Documents)."
+            messagebox.showerror("Permission Error", error_msg)
+            logger.error(f"Permission denied for output folder: {output_folder}")
+            self._finish_download_ui()
+            return
+        except Exception as e:
+            error_msg = f"Cannot access output folder '{output_folder}': {str(e)}\n\nPlease select a different folder."
+            messagebox.showerror("Folder Error", error_msg)
+            logger.error(f"Cannot access output folder {output_folder}: {e}")
+            self._finish_download_ui()
+            return
+
+        succeeded = 0
+        for index, video_url in enumerate(urls, start=1):
+            if self.cancel_download:
+                break
+            if len(urls) > 1:
+                self.update_progress('status', text=f"Video {index}/{len(urls)}: starting...")
+            if self.download_audio(video_url, output_folder, artist, album):
+                succeeded += 1
+
+        self._finish_download_ui()
+
+        if self.cancel_download:
+            return
+        if succeeded:
+            if messagebox.askyesno("Success", f"Finished downloading {succeeded} of {len(urls)} video(s).\nOpen destination folder?"):
+                self._open_folder(output_folder)
             
     def cancel_download_process(self):
         """Cancel ongoing download"""
@@ -596,7 +693,7 @@ class MyGUI:
         """
         self.artist_entry.delete(0, tk.END)
         self.album_entry.delete(0, tk.END)
-        self.url_entry.delete(0, tk.END)
+        self.url_text.delete("1.0", tk.END)
         self.destination_text.config(text="please select a folder")
 
     def on_closing(self):
@@ -604,20 +701,24 @@ class MyGUI:
         Confirm the user wants to quit the application.
         """
         if messagebox.askyesno("Quit?", "Are you sure you want to quit?"):
+            save_settings(self._current_settings())
             self.root.destroy()
             logger.info("Application closed on user request.")
 
     def check_available_formats(self):
-        """Check what formats are available for the given URL"""
-        video_url = self.url_entry.get().strip()
-        
-        if not video_url:
+        """Check what formats are available for the first URL in the queue"""
+        urls = self._get_urls()
+
+        if not urls:
             messagebox.showwarning("Warning", "Please enter a YouTube URL first.")
             return
-            
+
+        video_url = urls[0]
         if not self.is_valid_youtube_url(video_url):
             messagebox.showerror("Error", "Please enter a valid YouTube URL.")
             return
+        if len(urls) > 1:
+            logger.info(f"Multiple URLs queued; checking formats for the first one only: {video_url}")
         
         # Show checking status
         self.status_label.config(text="Checking available formats...")
