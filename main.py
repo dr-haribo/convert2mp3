@@ -2,8 +2,11 @@
 Python GUI application to download audio from YouTube videos as MP3 files.
 """
 import os
+import sys
+import json
 import logging
 import threading
+import subprocess
 import requests
 import tkinter as tk
 from tkinter import messagebox, filedialog, PhotoImage, ttk
@@ -18,12 +21,48 @@ import queue
 logger = logging.getLogger(__name__)
 logging.basicConfig(filename="app.log", level=logging.DEBUG, format="%(asctime)s:%(levelname)s:%(message)s")
 
+SETTINGS_PATH = os.path.expanduser("~/.convert2mp3_settings.json")
+
+SETTINGS_DEFAULTS = {
+    'download_directory': '',
+    'artist': '',
+    'album': '',
+    'quality': '128',
+    'conversion_speed': 'fast',
+    'fast_download': True,
+    'use_cookies': False,
+    'use_cookie_file': False,
+    'cookie_file_path': '',
+    'format': 'auto',
+}
+
+
+def load_settings():
+    """Load persisted GUI settings, falling back to defaults if missing/corrupt"""
+    settings = SETTINGS_DEFAULTS.copy()
+    try:
+        with open(SETTINGS_PATH, 'r') as f:
+            saved = json.load(f)
+        settings.update({k: v for k, v in saved.items() if k in settings})
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return settings
+
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS_PATH, 'w') as f:
+            json.dump(settings, f, indent=2)
+    except OSError as e:
+        logger.error(f"Failed to save settings: {e}")
+
 class MyGUI:
     """
     class for the GUI and application logic
     """
     def __init__(self):
         self.root = tk.Tk()
+        settings = load_settings()
 
         self.style = ttk.Style()
         self.style.configure("TProgressbar", troughcolor="white", background="#BFBFBF", thickness=10)
@@ -74,175 +113,129 @@ class MyGUI:
         self.scrollable_frame.bind("<Configure>", on_frame_configure)
         self.main_canvas.bind("<Configure>", on_canvas_configure)
         
+        # Shared Windows-95-style look, kept as one set of constants so every
+        # widget in the form uses the same palette/spacing/relief consistently.
+        BG = "#BFBFBF"
+        BTN_BG = "#D4D0C8"
+        ACCENT = "#000080"
+        FONT_LABEL = ("Helvetica", 10, "bold")
+        FONT_BUTTON = ("Helvetica", 12, "bold")
+        FONT_BUTTON_SMALL = ("Helvetica", 11)
+        GROUP_KW = dict(bg=BG, fg="black", relief="groove", bd=2, font=FONT_LABEL)
+        SECTION_GAP = 10
+
         # Start building the UI inside the scrollable frame
-        frame = tk.Frame(self.scrollable_frame, bg="#BFBFBF")
-        frame.pack(fill="both", expand=False, padx=20, pady=10)
-        image_label = tk.Label(frame, image=self.logo, bg="#BFBFBF")
+        header_frame = tk.Frame(self.scrollable_frame, bg=BG)
+        header_frame.pack(fill="both", expand=False, padx=20, pady=10)
+        image_label = tk.Label(header_frame, image=self.logo, bg=BG)
         image_label.pack(side="top", anchor="center")
-        tk.Label(frame, text="Convert2mp3",bg="#BFBFBF", fg="#000080", font=("Helvetica", 15, "bold")).pack(side="top", anchor="center") 
+        tk.Label(header_frame, text="Convert2mp3", bg=BG, fg=ACCENT, font=("Helvetica", 15, "bold")).pack(side="top", anchor="center")
 
-        #tk.Label(self.root, image=self.logo, ).pack(pady=5, padx=5, anchor="nw", side="left")
-
-        self.download_directory = ""
+        self.download_directory = settings['download_directory']
         self.downloading = False
         self.cancel_download = False
+        self.in_postprocessing = False
         self.update_queue = queue.Queue()
 
         # Create main content frame
-        content_frame = tk.Frame(self.scrollable_frame, bg="#BFBFBF")
+        content_frame = tk.Frame(self.scrollable_frame, bg=BG)
         content_frame.pack(fill="both", expand=False, padx=20, pady=10)
 
-        tk.Label(content_frame, text="Enter YouTube URL:", bg="#BFBFBF", fg="black", font=("Helvetica", 10, "bold")).pack(pady=5, anchor="w")
-        self.url_entry = tk.Entry(content_frame, width=50)
-        self.url_entry.pack(pady=5)
+        tk.Label(content_frame, text="Enter YouTube URL(s), one per line:", bg=BG, fg="black", font=FONT_LABEL).pack(pady=(0, 4), anchor="w")
+        self.url_text = tk.Text(content_frame, width=50, height=4, relief="sunken", bd=1)
+        self.url_text.pack(pady=(0, SECTION_GAP))
 
-        tk.Label(content_frame, text="Destination Folder:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
-        self.destination_text = tk.Label(content_frame, width=60,text="please select a folder",font=("Helvetica", 10),  relief="sunken")
-        self.destination_text.pack(pady=5)
-        self.destination_button = tk.Button(content_frame, text="Select Folder", bg="#D4D0C8", fg="black", relief="ridge", font=("Helvetica", 11), command=self.set_destination_folder)
-        self.destination_button.pack(pady=5)
+        tk.Label(content_frame, text="Destination Folder:", bg=BG, fg="black", font=FONT_LABEL).pack(pady=(0, 4), anchor="w")
+        self.destination_text = tk.Label(content_frame, width=60, text=self.download_directory or "please select a folder", font=("Helvetica", 10), relief="sunken", bg="white")
+        self.destination_text.pack(pady=(0, 6))
+        self.destination_button = tk.Button(content_frame, text="Select Folder", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON_SMALL, command=self.set_destination_folder)
+        self.destination_button.pack(pady=(0, SECTION_GAP))
 
-        tk.Label(content_frame, text="Artist:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
-        self.artist_entry = tk.Entry(content_frame, width=50)
-        self.artist_entry.pack(pady=5)
+        # Metadata group
+        metadata_group = tk.LabelFrame(content_frame, text="Metadata (optional)", **GROUP_KW)
+        metadata_group.pack(fill="x", pady=(0, SECTION_GAP))
+        tk.Label(metadata_group, text="Artist:", bg=BG, fg="black").pack(pady=(6, 2), anchor="w", padx=8)
+        self.artist_entry = tk.Entry(metadata_group, width=48)
+        self.artist_entry.insert(0, settings['artist'])
+        self.artist_entry.pack(pady=(0, 6), padx=8)
+        tk.Label(metadata_group, text="Album:", bg=BG, fg="black").pack(pady=(0, 2), anchor="w", padx=8)
+        self.album_entry = tk.Entry(metadata_group, width=48)
+        self.album_entry.insert(0, settings['album'])
+        self.album_entry.pack(pady=(0, 8), padx=8)
 
-        tk.Label(content_frame, text="Album:", bg="#BFBFBF", fg="black" ).pack(pady=5, anchor="w")
-        self.album_entry = tk.Entry(content_frame, width=50)
-        self.album_entry.pack(pady=5)
+        # Audio quality group
+        quality_group = tk.LabelFrame(content_frame, text="Audio Quality", **GROUP_KW)
+        quality_group.pack(fill="x", pady=(0, SECTION_GAP))
+        self.quality_var = tk.StringVar(value=settings['quality'])
+        for text, value in (("128 kbps", "128"), ("192 kbps", "192"), ("320 kbps", "320")):
+            tk.Radiobutton(quality_group, text=text, variable=self.quality_var, value=value, bg=BG).pack(side="left", padx=8, pady=6)
 
-        # Add quality selection
-        tk.Label(content_frame, text="Audio Quality:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
-        self.quality_var = tk.StringVar(value="128")
-        quality_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        quality_frame.pack(pady=5)
-        
-        tk.Radiobutton(quality_frame, text="128 kbps", variable=self.quality_var, value="128", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(quality_frame, text="192 kbps", variable=self.quality_var, value="192", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(quality_frame, text="320 kbps", variable=self.quality_var, value="320", bg="#BFBFBF").pack(side="left")
+        # Conversion speed group
+        speed_group = tk.LabelFrame(content_frame, text="Conversion Speed", **GROUP_KW)
+        speed_group.pack(fill="x", pady=(0, SECTION_GAP))
+        self.conversion_speed = tk.StringVar(value=settings['conversion_speed'])
+        for text, value in (("Fast", "fast"), ("Balanced", "balanced"), ("High Quality", "quality")):
+            tk.Radiobutton(speed_group, text=text, variable=self.conversion_speed, value=value, bg=BG).pack(side="left", padx=8, pady=6)
 
-        # Add conversion speed preference
-        tk.Label(content_frame, text="Conversion Speed:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
-        self.conversion_speed = tk.StringVar(value="fast")
-        conversion_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        conversion_frame.pack(pady=5)
-        
-        tk.Radiobutton(conversion_frame, text="Fast", variable=self.conversion_speed, value="fast", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(conversion_frame, text="Balanced", variable=self.conversion_speed, value="balanced", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(conversion_frame, text="High Quality", variable=self.conversion_speed, value="quality", bg="#BFBFBF").pack(side="left")
+        # Format preference + fast-download behaviour group (these two settings interact)
+        format_group = tk.LabelFrame(content_frame, text="Format & Download Behavior", **GROUP_KW)
+        format_group.pack(fill="x", pady=(0, SECTION_GAP))
+        self.format_var = tk.StringVar(value=settings['format'])
+        format_radios = tk.Frame(format_group, bg=BG)
+        format_radios.pack(fill="x", padx=8, pady=(6, 2))
+        for text, value in (("Auto (Smart)", "auto"), ("Direct (Fast)", "direct"), ("HLS (Compatible)", "hls")):
+            tk.Radiobutton(format_radios, text=text, variable=self.format_var, value=value, bg=BG).pack(side="left")
+        self.fast_download = tk.BooleanVar(value=settings['fast_download'])
+        tk.Checkbutton(format_group, text="Fast Download (avoid HLS)", variable=self.fast_download,
+                       bg=BG, selectcolor=BTN_BG).pack(anchor="w", padx=8, pady=(0, 8))
 
-        # Add download speed preference
-        speed_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        speed_frame.pack(pady=5)
-        self.fast_download = tk.BooleanVar(value=True)
-        tk.Checkbutton(speed_frame, text="Fast Download (avoid HLS)", variable=self.fast_download, 
-                      bg="#BFBFBF", selectcolor="#D4D0C8").pack(side="left")
-        
-        # Add cookie usage preference
-        cookie_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        cookie_frame.pack(pady=5)
-        self.use_cookies = tk.BooleanVar(value=False)  # Default to False to avoid keychain requests
-        tk.Checkbutton(cookie_frame, text="Use Browser Cookies (may require keychain access)", 
-                      variable=self.use_cookies, bg="#BFBFBF", selectcolor="#D4D0C8").pack(side="left")
-        
-        # Add manual cookie file option
-        cookie_file_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        cookie_file_frame.pack(pady=5)
-        self.use_cookie_file = tk.BooleanVar(value=False)
-        tk.Checkbutton(cookie_file_frame, text="Use Cookie File (manual export)", 
-                      variable=self.use_cookie_file, bg="#BFBFBF", selectcolor="#D4D0C8").pack(side="left")
-        
-        # Cookie file path entry
-        self.cookie_file_path = tk.StringVar()
-        cookie_path_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        cookie_path_frame.pack(pady=2)
-        tk.Label(cookie_path_frame, text="Cookie File Path:", bg="#BFBFBF", fg="black").pack(side="left")
-        tk.Entry(cookie_path_frame, textvariable=self.cookie_file_path, width=30).pack(side="left", padx=5)
-        tk.Button(cookie_path_frame, text="Browse", bg="#D4D0C8", fg="black", 
-                 command=self.browse_cookie_file).pack(side="left")
+        # Authentication group (cookies)
+        auth_group = tk.LabelFrame(content_frame, text="Authentication (optional)", **GROUP_KW)
+        auth_group.pack(fill="x", pady=(0, SECTION_GAP))
+        self.use_cookies = tk.BooleanVar(value=settings['use_cookies'])  # Default to False to avoid keychain requests
+        tk.Checkbutton(auth_group, text="Use Browser Cookies (may require keychain access)",
+                       variable=self.use_cookies, bg=BG, selectcolor=BTN_BG).pack(anchor="w", padx=8, pady=(6, 2))
+        self.use_cookie_file = tk.BooleanVar(value=settings['use_cookie_file'])
+        tk.Checkbutton(auth_group, text="Use Cookie File (manual export)",
+                       variable=self.use_cookie_file, bg=BG, selectcolor=BTN_BG).pack(anchor="w", padx=8, pady=2)
+        self.cookie_file_path = tk.StringVar(value=settings['cookie_file_path'])
+        cookie_path_frame = tk.Frame(auth_group, bg=BG)
+        cookie_path_frame.pack(fill="x", padx=8, pady=(2, 8))
+        tk.Label(cookie_path_frame, text="Cookie File Path:", bg=BG, fg="black").pack(side="left")
+        tk.Entry(cookie_path_frame, textvariable=self.cookie_file_path, width=26).pack(side="left", padx=5)
+        tk.Button(cookie_path_frame, text="Browse", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON_SMALL,
+                  command=self.browse_cookie_file).pack(side="left")
 
-        # Add format preference
-        tk.Label(content_frame, text="Format Preference:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
-        self.format_var = tk.StringVar(value="auto")
-        format_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        format_frame.pack(pady=5)
-        
-        tk.Radiobutton(format_frame, text="Auto (Smart)", variable=self.format_var, value="auto", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(format_frame, text="Direct (Fast)", variable=self.format_var, value="direct", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(format_frame, text="HLS (Compatible)", variable=self.format_var, value="hls", bg="#BFBFBF").pack(side="left")
-
-        buttonframe = tk.Frame(content_frame, bg="#BFBFBF")
+        buttonframe = tk.Frame(content_frame, bg=BG)
         buttonframe.columnconfigure(0, weight=1)
         buttonframe.columnconfigure(1, weight=1)
         buttonframe.columnconfigure(2, weight=1)
 
-        clear_button = tk.Button(buttonframe, text="Clear",bg="#D4D0C8", fg="black", relief="ridge", font=("Helvetica", 12, "bold"), command=self.clear)
+        clear_button = tk.Button(buttonframe, text="Clear", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON, command=self.clear)
         clear_button.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-        
-        check_formats_button = tk.Button(buttonframe, text="Check Formats", bg="#D4D0C8", fg="black", relief="ridge", font=("Helvetica", 12, "bold"), command=self.check_available_formats)
-        check_formats_button.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
-        
-        self.download_button = tk.Button(buttonframe, text="Download MP3", bg="#D4D0C8", fg="black" , relief="ridge", font=("Helvetica", 12, "bold"), command=self.start_download)
-        self.download_button.grid(row=0, column=2,sticky="ew", padx=5, pady=5)
 
-        buttonframe.pack(pady=10)
-        
+        check_formats_button = tk.Button(buttonframe, text="Check Formats", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON, command=self.check_available_formats)
+        check_formats_button.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+
+        self.download_button = tk.Button(buttonframe, text="Download MP3", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON, command=self.start_download)
+        self.download_button.grid(row=0, column=2, sticky="ew", padx=5, pady=5)
+
+        buttonframe.pack(fill="x", pady=(0, 6))
+
         # Add cancel button (inside content_frame, not root)
-        self.cancel_button = tk.Button(content_frame, text="Cancel", bg="#FF6B6B", fg="white", 
-                                      relief="ridge", font=("Helvetica", 12, "bold"), 
+        self.cancel_button = tk.Button(content_frame, text="Cancel", bg="#FF6B6B", fg="white",
+                                      relief="ridge", font=FONT_BUTTON,
                                       command=self.cancel_download_process)
-        self.cancel_button.pack(pady=5)
+        self.cancel_button.pack(pady=(0, SECTION_GAP))
         self.cancel_button.config(state="disabled")
-        
-        # Add collapsible Advanced Tools section
-        self.advanced_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        self.advanced_frame.pack(pady=5, fill="x")
-        
-        # Advanced Tools header with toggle button
-        advanced_header_frame = tk.Frame(self.advanced_frame, bg="#BFBFBF")
-        advanced_header_frame.pack(fill="x")
-        
-        self.advanced_toggle = tk.Button(advanced_header_frame, text="🔧 Advanced Tools", 
-                                        bg="#E0E0E0", fg="#333333", relief="flat",
-                                        font=("Helvetica", 10, "bold"),
-                                        command=self.toggle_advanced_tools)
-        self.advanced_toggle.pack(side="left")
-        
-        # Advanced Tools content (initially hidden)
-        self.advanced_content = tk.Frame(self.advanced_frame, bg="#BFBFBF")
-        self.advanced_content.pack(fill="x", pady=(5, 0))
-        
-        # Test YouTube Access button
-        test_button = tk.Button(self.advanced_content, text="Test YouTube Access", 
-                               bg="#D4D0C8", fg="black", relief="ridge", 
-                               font=("Helvetica", 10, "bold"),
-                               command=self.test_youtube_access)
-        test_button.pack(pady=2, fill="x")
-        
-        # Test yt-dlp Command Line button
-        cmd_test_button = tk.Button(self.advanced_content, text="Test yt-dlp Command Line", 
-                                   bg="#D4D0C8", fg="black", relief="ridge", 
-                                   font=("Helvetica", 10, "bold"),
-                                   command=self.test_ytdlp_command)
-        cmd_test_button.pack(pady=2, fill="x")
-        
-        # Diagnose Python Environment button
-        diag_button = tk.Button(self.advanced_content, text="Diagnose Python Environment", 
-                               bg="#D4D0C8", fg="black", relief="ridge", 
-                               font=("Helvetica", 10, "bold"),
-                               command=self.diagnose_python_environment)
-        diag_button.pack(pady=2, fill="x")
-        
-        # Initially hide advanced content
-        self.advanced_content.pack_forget()
-        self.advanced_expanded = False
-        
-        # Replace indeterminate progress bar with determinate one
+
+        # Progress bar - determinate while downloading, indeterminate during conversion
         self.progressbar = ttk.Progressbar(content_frame, orient="horizontal", length=200, mode="determinate", style="TProgressbar")
-        self.progressbar.pack(pady=10)
-        
+        self.progressbar.pack(pady=(0, 6))
+
         # Add status label
-        self.status_label = tk.Label(content_frame, text="Ready", bg="#BFBFBF", fg="black")
-        self.status_label.pack(pady=5)
+        self.status_label = tk.Label(content_frame, text="Ready", bg=BG, fg="black")
+        self.status_label.pack(pady=(0, 4))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -261,6 +254,17 @@ class MyGUI:
                     self.progressbar['value'] = update['value']
                 elif update['type'] == 'status':
                     self.status_label.config(text=update['text'])
+                elif update['type'] == 'mode':
+                    if update['value'] == 'indeterminate':
+                        self.progressbar.config(mode='indeterminate')
+                        self.progressbar.start(10)
+                    else:
+                        self.progressbar.stop()
+                        self.progressbar.config(mode='determinate')
+                        self.progressbar['value'] = 0
+                elif update['type'] == 'download_finished':
+                    self.cancel_button.config(state="disabled")
+                    self.download_button.config(state="normal")
         except queue.Empty:
             pass
         finally:
@@ -269,6 +273,38 @@ class MyGUI:
     def update_progress(self, progress_type, **kwargs):
         """Thread-safe way to update UI"""
         self.update_queue.put({'type': progress_type, **kwargs})
+
+    def _get_urls(self):
+        """Read the URL box, one URL per non-empty line"""
+        raw = self.url_text.get("1.0", tk.END)
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+
+    def _current_settings(self):
+        """Snapshot the current form values for persistence"""
+        return {
+            'download_directory': self.download_directory,
+            'artist': self.artist_entry.get().strip(),
+            'album': self.album_entry.get().strip(),
+            'quality': self.quality_var.get(),
+            'conversion_speed': self.conversion_speed.get(),
+            'fast_download': self.fast_download.get(),
+            'use_cookies': self.use_cookies.get(),
+            'use_cookie_file': self.use_cookie_file.get(),
+            'cookie_file_path': self.cookie_file_path.get(),
+            'format': self.format_var.get(),
+        }
+
+    def _open_folder(self, path):
+        """Open the given folder in the OS file manager"""
+        try:
+            if sys.platform == 'darwin':
+                subprocess.run(['open', path], check=False)
+            elif sys.platform == 'win32':
+                os.startfile(path)
+            else:
+                subprocess.run(['xdg-open', path], check=False)
+        except Exception as e:
+            logger.error(f"Failed to open folder {path}: {e}")
 
     def is_valid_youtube_url(self, url):
         """Validate YouTube URL format"""
@@ -290,44 +326,52 @@ class MyGUI:
             filename = filename[:200]
         return filename
 
-    def download_audio(self, video_url, output_folder="/Desktop/downloads", artist="Unknown", album="Unknown"):
+    def _finish_download_ui(self):
+        """Reset progress bar, flags and buttons after a download attempt ends (success, failure, or cancel)"""
+        self.in_postprocessing = False
+        self.update_progress('mode', value='determinate')
+        self.downloading = False
+        self.cancel_download = False
+        self.update_progress('download_finished')
+        self.update_progress('status', text="Ready")
+
+    def _build_ydl_opts(self, format_spec, client, skip_hls, common_opts, output_template,
+                         quality, ffmpeg_preset, ffmpeg_threads, ffmpeg_loglevel):
+        """Build a single yt-dlp options dict for one (client, format) download strategy"""
+        opts = common_opts.copy()
+        extractor_args = {'player_client': [client]}  # Try different client to avoid SABR streaming
+        if skip_hls:
+            extractor_args['skip'] = ['hls']
+        opts['extractor_args'] = {'youtube': extractor_args}
+        return {
+            'format': format_spec,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': quality,
+            }],
+            'outtmpl': output_template,
+            'postprocessor_args': ['-preset', ffmpeg_preset, '-threads', ffmpeg_threads, '-loglevel', ffmpeg_loglevel],
+            'progress_hooks': [self.progress_hook],
+            'verbose': True,
+            **opts
+        }
+
+    def download_audio(self, video_url, output_folder, artist="Unknown", album="Unknown"):
         """
-        Downloads the audio from a YouTube video as an MP3 file and sets metadata.
-        
+        Downloads the audio from a single YouTube video (or playlist) as MP3 file(s) and
+        sets metadata. Assumes output_folder has already been validated as writable by
+        the caller (download_queue), since that check only needs to happen once per batch.
+
         :param video_url: URL of the YouTube video.
         :param output_folder: Folder to save the MP3 file.
         :param artist: Artist name to set in metadata.
         :param album: Album name to set in metadata.
+        :return: True if the download succeeded, False otherwise.
         """
-        # Check if output directory is writable
-        try:
-            if not os.path.exists(output_folder):
-                os.makedirs(output_folder)
-            # Test write access by creating a temporary file
-            test_file = os.path.join(output_folder, ".test_write_access")
-            with open(test_file, 'w') as f:
-                f.write("test")
-            os.remove(test_file)
-        except PermissionError:
-            error_msg = f"Permission denied: Cannot write to '{output_folder}'\n\nThis usually means:\n1. The folder is on a read-only drive\n2. You don't have write permissions\n3. The drive is not properly mounted\n\nTry selecting a different folder (like Desktop or Documents)."
-            messagebox.showerror("Permission Error", error_msg)
-            logger.error(f"Permission denied for output folder: {output_folder}")
-            return
-        except Exception as e:
-            error_msg = f"Cannot access output folder '{output_folder}': {str(e)}\n\nPlease select a different folder."
-            messagebox.showerror("Folder Error", error_msg)
-            logger.error(f"Cannot access output folder {output_folder}: {e}")
-            return
-
         quality = self.quality_var.get()
         output_template = f'{output_folder}/%(title)s.%(ext)s'
-        
-        # Build download strategies based on user preferences
-        download_strategies = []
-        
-        # Define different client types to try (to avoid SABR streaming issues)
-        client_types = ['android', 'web', 'ios', 'tv_embedded']
-        
+
         # Set FFmpeg settings based on conversion speed preference
         if self.conversion_speed.get() == "fast":
             ffmpeg_preset = "ultrafast"
@@ -341,23 +385,12 @@ class MyGUI:
             ffmpeg_preset = "fast"
             ffmpeg_threads = "0"
             ffmpeg_loglevel = "info"
-        
+
         # Common yt-dlp options for all strategies
-        # Don't skip DASH/HLS as they might be the only formats available
-        # Instead, we'll try different client types to avoid SABR streaming
         common_opts = {
             'nocheckcertificate': True,
         }
-        
-        # Only skip formats if user explicitly wants to avoid HLS
-        if self.fast_download.get() and self.format_var.get() != "hls":
-            # Try to avoid HLS but allow DASH (which is often necessary)
-            common_opts['extractor_args'] = {
-                'youtube': {
-                    'skip': ['hls'],  # Only skip HLS, allow DASH
-                }
-            }
-        
+
         # Only add cookie support if user explicitly enables it
         if self.use_cookies.get():
             common_opts['cookiesfrombrowser'] = ('chrome',)
@@ -365,129 +398,50 @@ class MyGUI:
         elif self.use_cookie_file.get():
             cookie_path = self.cookie_file_path.get()
             if cookie_path:
-                try:
-                    with open(cookie_path, 'r') as f:
-                        cookie_data = f.read()
-                    common_opts['cookies'] = cookie_data
-                    logger.info(f"Using cookie file from: {cookie_path}")
-                except FileNotFoundError:
+                if not os.path.isfile(cookie_path):
                     error_msg = f"Cookie file not found at: {cookie_path}\nPlease select a valid cookie file."
                     messagebox.showerror("Cookie Error", error_msg)
                     logger.error(f"Cookie file not found: {cookie_path}")
-                    return
-                except Exception as e:
-                    error_msg = f"Error reading cookie file {cookie_path}: {str(e)}\nPlease ensure it's a valid cookie file."
-                    messagebox.showerror("Cookie Error", error_msg)
-                    logger.error(f"Error reading cookie file {cookie_path}: {e}")
-                    return
+                    return False
+                common_opts['cookiefile'] = cookie_path
+                logger.info(f"Using cookie file from: {cookie_path}")
             else:
                 error_msg = "Please select a cookie file path."
                 messagebox.showerror("Cookie Error", error_msg)
                 logger.error("No cookie file path selected.")
-                return
+                return False
         else:
             logger.info("Skipping browser cookies and cookie file to avoid keychain access")
-        
+
+        # Define different client types to try (to avoid SABR streaming issues), and which
+        # (clients, formats, skip_hls) phases to attempt based on the user's preferences.
+        client_types = ['android', 'web', 'ios', 'tv_embedded']
+        phases = []
+
         if self.format_var.get() == "direct" or (self.format_var.get() == "auto" and self.fast_download.get()):
-            # Fast strategies that avoid HLS - try with different client types
-            for client in client_types[:2]:  # Try android and web first
-                opts = common_opts.copy()
-                opts['extractor_args'] = {
-                    'youtube': {
-                        'skip': ['hls'],
-                        'player_client': [client],  # Try different client to avoid SABR
-                    }
-                }
-                download_strategies.extend([
-                    # Strategy: Direct audio formats with specific client
-                    {
-                        'format': 'bestaudio[ext=mp3]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[protocol!=m3u8]/bestaudio',
-                        'postprocessors': [{
-                            'key': 'FFmpegExtractAudio',
-                            'preferredcodec': 'mp3',
-                            'preferredquality': quality,
-                        }],
-                        'outtmpl': output_template,
-                        'postprocessor_args': ['-preset', ffmpeg_preset, '-threads', ffmpeg_threads, '-loglevel', ffmpeg_loglevel],
-                        'progress_hooks': [self.progress_hook],
-                        'verbose': True,
-                        **opts
-                    },
-                    # Strategy: More permissive format selection with client
-                    {
-                        'format': 'bestaudio[protocol!=m3u8]/bestaudio/best[height<=480]',
-                        'postprocessors': [{
-                            'key': 'FFmpegExtractAudio',
-                            'preferredcodec': 'mp3',
-                            'preferredquality': quality,
-                        }],
-                        'outtmpl': output_template,
-                        'postprocessor_args': ['-preset', ffmpeg_preset, '-threads', ffmpeg_threads, '-loglevel', ffmpeg_loglevel],
-                        'progress_hooks': [self.progress_hook],
-                        'verbose': True,
-                        **opts
-                    }
-                ])
-        
+            # Fast strategies that avoid HLS - try android and web first
+            phases.append((client_types[:2], [
+                'bestaudio[ext=mp3]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[protocol!=m3u8]/bestaudio',
+                'bestaudio[protocol!=m3u8]/bestaudio/best[height<=480]',
+            ], True))
+
         if self.format_var.get() == "hls" or (self.format_var.get() == "auto" and not self.fast_download.get()):
-            # Include HLS formats for compatibility - try with different clients
-            for client in client_types:
-                opts = common_opts.copy()
-                opts['extractor_args'] = {
-                    'youtube': {
-                        'player_client': [client],
-                    }
-                }
-                download_strategies.append({
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': quality,
-                    }],
-                    'outtmpl': output_template,
-                    'postprocessor_args': ['-preset', ffmpeg_preset, '-threads', ffmpeg_threads, '-loglevel', ffmpeg_loglevel],
-                    'progress_hooks': [self.progress_hook],
-                    'verbose': True,
-                    **opts
-                })
-        
+            # Include HLS formats for compatibility - try all client types
+            phases.append((client_types, ['bestaudio/best'], False))
+
         # Always add fallback strategies with different client types
-        for client in client_types:
-            opts = common_opts.copy()
-            opts['extractor_args'] = {
-                'youtube': {
-                    'player_client': [client],
-                }
-            }
-            # Fallback 1: Try bestaudio
-            download_strategies.append({
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': quality,
-                }],
-                'outtmpl': output_template,
-                'postprocessor_args': ['-preset', ffmpeg_preset, '-threads', ffmpeg_threads, '-loglevel', ffmpeg_loglevel],
-                'progress_hooks': [self.progress_hook],
-                'verbose': True,
-                **opts
-            })
-            # Fallback 2: Try any format (video+audio, then extract audio)
-            download_strategies.append({
-                'format': 'best[height<=720]/best',  # Try video formats too, then extract audio
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': quality,
-                }],
-                'outtmpl': output_template,
-                'postprocessor_args': ['-preset', ffmpeg_preset, '-threads', ffmpeg_threads, '-loglevel', ffmpeg_loglevel],
-                'progress_hooks': [self.progress_hook],
-                'verbose': True,
-                **opts
-            })
+        phases.append((client_types, [
+            'bestaudio/best',
+            'best[height<=720]/best',  # Try video formats too, then extract audio
+        ], False))
+
+        download_strategies = [
+            self._build_ydl_opts(format_spec, client, skip_hls, common_opts, output_template,
+                                  quality, ffmpeg_preset, ffmpeg_threads, ffmpeg_loglevel)
+            for clients, format_specs, skip_hls in phases
+            for client in clients
+            for format_spec in format_specs
+        ]
 
         for i, ydl_opts in enumerate(download_strategies):
             try:
@@ -522,9 +476,9 @@ class MyGUI:
 
                 # If we get here, download was successful
                 if not self.cancel_download:
-                    messagebox.showinfo("Success", f"Download complete with metadata and thumbnail!\nUsed method {i+1}")
                     logger.info(f"Successfully downloaded audio from {video_url} to {output_folder} using strategy {i+1}")
-                    return
+                    return True
+                return False
                     
             except yt_dlp.DownloadError as e:
                 error_msg = f"Strategy {i+1} failed: {str(e)}"
@@ -544,9 +498,10 @@ class MyGUI:
                     error_msg += "\n\nAll download methods failed. Try:\n1. Check if the video has audio content\n2. Try a different video\n3. Check available disk space\n4. Verify FFmpeg installation\n5. Try a different output folder\n6. Wait a bit before trying again (YouTube rate limiting)\n7. This video might only have images (no audio)"
                     messagebox.showerror("Download Error", error_msg)
                     logger.error(f"All download strategies failed for {video_url}")
+                    return False
                 else:
                     continue  # Try next strategy
-                    
+
             except Exception as e:
                 error_msg = f"Strategy {i+1} failed with unexpected error: {str(e)}"
                 if "permission" in str(e).lower():
@@ -559,21 +514,18 @@ class MyGUI:
                     error_msg += "\n\nAll download methods failed. This might be due to:\n- Unsupported audio format\n- Corrupted download\n- Insufficient disk space\n- Permission issues\n- YouTube authentication issues"
                     messagebox.showerror("Error", error_msg)
                     logger.error(f"All download strategies failed for {video_url}")
+                    return False
                 else:
                     continue  # Try next strategy
-                    
-        # Cleanup after all strategies are tried
-        self.progressbar.stop()
-        self.progressbar['value'] = 0
-        self.downloading = False
-        self.cancel_download = False
-        self.cancel_button.config(state="disabled")
-        self.download_button.config(state="normal")
-        self.update_progress('status', text="Ready")
+
+        return False
 
     def progress_hook(self, d):
         """Progress hook for yt-dlp to update progress bar"""
         if d['status'] == 'downloading':
+            if self.in_postprocessing:
+                self.in_postprocessing = False
+                self.update_progress('mode', value='determinate')
             if 'total_bytes' in d and d['total_bytes']:
                 percent = (d['downloaded_bytes'] / d['total_bytes']) * 100
                 self.update_progress('progress', value=percent)
@@ -586,14 +538,14 @@ class MyGUI:
                 # For HLS or unknown total size, show downloaded amount
                 downloaded_mb = d['downloaded_bytes'] / (1024 * 1024)
                 self.update_progress('status', text=f"Downloading... {downloaded_mb:.1f} MB")
-        elif d['status'] == 'finished':
-            self.update_progress('status', text="Converting to MP3...")
-            # Reset progress bar for conversion phase
-            self.update_progress('progress', value=0)
-        elif d['status'] == 'postprocessing':
-            self.update_progress('status', text="Processing audio...")
-            # Show some progress during postprocessing
-            self.update_progress('progress', value=50)
+        elif d['status'] in ('finished', 'postprocessing'):
+            # yt-dlp/ffmpeg don't expose real conversion progress, so show an
+            # indeterminate (bouncing) bar instead of a misleading fixed value.
+            if not self.in_postprocessing:
+                self.in_postprocessing = True
+                self.update_progress('mode', value='indeterminate')
+            text = "Converting to MP3..." if d['status'] == 'finished' else "Processing audio..."
+            self.update_progress('status', text=text)
 
     def save_thumbnail(self, info, filename):
         """
@@ -656,33 +608,74 @@ class MyGUI:
 
     def start_download(self):
         """
-        starts the download process
+        starts the download process for one or more queued URLs
         """
-        video_url = self.url_entry.get().strip()
+        urls = self._get_urls()
         artist = self.artist_entry.get().strip()
         album = self.album_entry.get().strip()
-        
-        if not video_url:
-            messagebox.showwarning("Warning", "Please enter a YouTube URL.")
+
+        if not urls:
+            messagebox.showwarning("Warning", "Please enter at least one YouTube URL.")
             return
-            
-        if not self.is_valid_youtube_url(video_url):
-            messagebox.showerror("Error", "Please enter a valid YouTube URL.")
+
+        invalid_urls = [u for u in urls if not self.is_valid_youtube_url(u)]
+        if invalid_urls:
+            messagebox.showerror("Error", "Please fix the following invalid YouTube URL(s):\n" + "\n".join(invalid_urls))
             return
-            
+
         if not self.download_directory:
             messagebox.showerror("Error", "Please select a destination folder.")
             return
 
-        logging.info(f"Downloading audio from {video_url} to {self.download_directory}")
+        logging.info(f"Downloading {len(urls)} URL(s) to {self.download_directory}")
         self.progressbar['value'] = 0
         self.downloading = True
         self.cancel_download = False
         self.cancel_button.config(state="normal")
         self.download_button.config(state="disabled")
         self.update_progress('status', text="Starting download...")
-        download_thread = threading.Thread(target=self.download_audio, args=(video_url, self.download_directory, artist, album))
-        download_thread.start() 
+        download_thread = threading.Thread(target=self.download_queue, args=(urls, self.download_directory, artist, album))
+        download_thread.start()
+
+    def download_queue(self, urls, output_folder, artist, album):
+        """Download one or more YouTube URLs sequentially, then show a single summary"""
+        # Check if output directory is writable (once for the whole batch)
+        try:
+            if not os.path.exists(output_folder):
+                os.makedirs(output_folder)
+            test_file = os.path.join(output_folder, ".test_write_access")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+        except PermissionError:
+            error_msg = f"Permission denied: Cannot write to '{output_folder}'\n\nThis usually means:\n1. The folder is on a read-only drive\n2. You don't have write permissions\n3. The drive is not properly mounted\n\nTry selecting a different folder (like Desktop or Documents)."
+            messagebox.showerror("Permission Error", error_msg)
+            logger.error(f"Permission denied for output folder: {output_folder}")
+            self._finish_download_ui()
+            return
+        except Exception as e:
+            error_msg = f"Cannot access output folder '{output_folder}': {str(e)}\n\nPlease select a different folder."
+            messagebox.showerror("Folder Error", error_msg)
+            logger.error(f"Cannot access output folder {output_folder}: {e}")
+            self._finish_download_ui()
+            return
+
+        succeeded = 0
+        for index, video_url in enumerate(urls, start=1):
+            if self.cancel_download:
+                break
+            if len(urls) > 1:
+                self.update_progress('status', text=f"Video {index}/{len(urls)}: starting...")
+            if self.download_audio(video_url, output_folder, artist, album):
+                succeeded += 1
+
+        self._finish_download_ui()
+
+        if self.cancel_download:
+            return
+        if succeeded:
+            if messagebox.askyesno("Success", f"Finished downloading {succeeded} of {len(urls)} video(s).\nOpen destination folder?"):
+                self._open_folder(output_folder)
             
     def cancel_download_process(self):
         """Cancel ongoing download"""
@@ -700,7 +693,7 @@ class MyGUI:
         """
         self.artist_entry.delete(0, tk.END)
         self.album_entry.delete(0, tk.END)
-        self.url_entry.delete(0, tk.END)
+        self.url_text.delete("1.0", tk.END)
         self.destination_text.config(text="please select a folder")
 
     def on_closing(self):
@@ -708,20 +701,24 @@ class MyGUI:
         Confirm the user wants to quit the application.
         """
         if messagebox.askyesno("Quit?", "Are you sure you want to quit?"):
+            save_settings(self._current_settings())
             self.root.destroy()
             logger.info("Application closed on user request.")
 
     def check_available_formats(self):
-        """Check what formats are available for the given URL"""
-        video_url = self.url_entry.get().strip()
-        
-        if not video_url:
+        """Check what formats are available for the first URL in the queue"""
+        urls = self._get_urls()
+
+        if not urls:
             messagebox.showwarning("Warning", "Please enter a YouTube URL first.")
             return
-            
+
+        video_url = urls[0]
         if not self.is_valid_youtube_url(video_url):
             messagebox.showerror("Error", "Please enter a valid YouTube URL.")
             return
+        if len(urls) > 1:
+            logger.info(f"Multiple URLs queued; checking formats for the first one only: {video_url}")
         
         # Show checking status
         self.status_label.config(text="Checking available formats...")
@@ -757,21 +754,13 @@ class MyGUI:
                 elif self.use_cookie_file.get():
                     cookie_path = self.cookie_file_path.get()
                     if cookie_path:
-                        try:
-                            with open(cookie_path, 'r') as f:
-                                cookie_data = f.read()
-                            ydl_opts['cookies'] = cookie_data
-                            logger.info(f"Using cookie file for format check: {cookie_path}")
-                        except FileNotFoundError:
+                        if not os.path.isfile(cookie_path):
                             error_msg = f"Cookie file not found at: {cookie_path}\nPlease select a valid cookie file."
                             messagebox.showerror("Cookie Error", error_msg)
                             logger.error(f"Cookie file not found for format check: {cookie_path}")
                             return
-                        except Exception as e:
-                            error_msg = f"Error reading cookie file {cookie_path} for format check: {str(e)}\nPlease ensure it's a valid cookie file."
-                            messagebox.showerror("Cookie Error", error_msg)
-                            logger.error(f"Error reading cookie file {cookie_path} for format check: {e}")
-                            return
+                        ydl_opts['cookiefile'] = cookie_path
+                        logger.info(f"Using cookie file for format check: {cookie_path}")
                     else:
                         error_msg = "Please select a cookie file path for format check."
                         messagebox.showerror("Cookie Error", error_msg)
@@ -802,13 +791,8 @@ class MyGUI:
                     ydl_opts['cookiesfrombrowser'] = ('chrome',)
                 elif self.use_cookie_file.get():
                     cookie_path = self.cookie_file_path.get()
-                    if cookie_path:
-                        try:
-                            with open(cookie_path, 'r') as f:
-                                cookie_data = f.read()
-                            ydl_opts['cookies'] = cookie_data
-                        except:
-                            pass
+                    if cookie_path and os.path.isfile(cookie_path):
+                        ydl_opts['cookiefile'] = cookie_path
                 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(video_url, download=False)
@@ -934,369 +918,6 @@ class MyGUI:
                                 command=result_window.destroy)
         close_button.pack(pady=10)
 
-    def test_youtube_access(self):
-        """Test if yt-dlp can access YouTube at all"""
-        self.status_label.config(text="Testing YouTube access...")
-        self.progressbar['value'] = 0
-        
-        # Run test in separate thread
-        test_thread = threading.Thread(target=self._test_youtube_worker)
-        test_thread.start()
-    
-    def _test_youtube_worker(self):
-        """Worker thread to test YouTube access"""
-        try:
-            # Test with a simple, popular video that should work
-            test_url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"  # "Me at the zoo" - YouTube's first video, always available
-            
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': False,
-                'extract_flat': False,
-            }
-            
-            # Try to use cookies if available
-            if self.use_cookies.get():
-                ydl_opts['cookiesfrombrowser'] = ('chrome',)
-                logger.info("Testing YouTube access with browser cookies")
-            elif self.use_cookie_file.get():
-                cookie_path = self.cookie_file_path.get()
-                if cookie_path:
-                    try:
-                        with open(cookie_path, 'r') as f:
-                            cookie_data = f.read()
-                        ydl_opts['cookies'] = cookie_data
-                        logger.info(f"Testing YouTube access with cookie file: {cookie_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to read cookie file: {e}")
-                        # Continue without cookies
-                else:
-                    logger.info("Testing YouTube access without cookies (no cookie file path)")
-            else:
-                logger.info("Testing YouTube access without cookies")
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Just try to get video info
-                info = ydl.extract_info(test_url, download=False)
-                
-                if info:
-                    title = info.get('title', 'Unknown')
-                    duration = info.get('duration', 0)
-                    
-                    result = f"✅ YouTube Access Working!\n\nVideo: {title}\nDuration: {duration//60}:{duration%60:02d}\n\nYour yt-dlp installation is working correctly."
-                    
-                    # Show result
-                    self.show_test_result(result, "success")
-                    logger.info("YouTube access test successful")
-                else:
-                    self.show_test_result("❌ Could not extract video information", "error")
-                    
-        except Exception as e:
-            error_msg = f"❌ YouTube Access Failed!\n\nError: {str(e)}\n\nThis means:\n1. yt-dlp is outdated\n2. YouTube blocked access\n3. Network issues\n4. yt-dlp installation problem"
-            self.show_test_result(error_msg, "error")
-            logger.error(f"YouTube access test failed: {e}")
-        finally:
-            self.status_label.config(text="Ready")
-            self.progressbar['value'] = 0
-    
-    def show_test_result(self, result_text, result_type):
-        """Show the test result in a new window"""
-        # Create a new window
-        result_window = tk.Toplevel(self.root)
-        result_window.title("YouTube Access Test")
-        result_window.geometry("500x300")
-        
-        if result_type == "success":
-            result_window.configure(bg="#E8F5E8")  # Light green
-            title_color = "#2E7D32"  # Dark green
-        else:
-            result_window.configure(bg="#FFEBEE")  # Light red
-            title_color = "#C62828"  # Dark red
-        
-        # Add title
-        title_label = tk.Label(result_window, text="YouTube Access Test Result", 
-                              bg=result_window.cget('bg'), fg=title_color, 
-                              font=("Helvetica", 14, "bold"))
-        title_label.pack(pady=10)
-        
-        # Add result text
-        text_widget = tk.Text(result_window, wrap="word", bg="white", fg="black", 
-                             font=("Arial", 11), height=10)
-        text_widget.pack(fill="both", expand=True, padx=20, pady=10)
-        
-        # Insert the result text
-        text_widget.insert("1.0", result_text)
-        text_widget.config(state="disabled")  # Make read-only
-        
-        # Add close button
-        close_button = tk.Button(result_window, text="Close", bg="#D4D0C8", fg="black",
-                                relief="ridge", font=("Helvetica", 12, "bold"),
-                                command=result_window.destroy)
-        close_button.pack(pady=10)
-
-    def test_ytdlp_command(self):
-        """Test yt-dlp directly from command line"""
-        self.status_label.config(text="Testing yt-dlp command line...")
-        self.progressbar['value'] = 0
-        
-        # Run command line test in separate thread
-        test_thread = threading.Thread(target=self._test_ytdlp_command_worker)
-        test_thread.start()
-    
-    def _test_ytdlp_command_worker(self):
-        """Worker thread to test yt-dlp command line"""
-        try:
-            import subprocess
-            import sys
-            
-            # Test 1: Check yt-dlp version
-            try:
-                result = subprocess.run([sys.executable, '-m', 'yt_dlp', '--version'], 
-                                      capture_output=True, text=True, timeout=10)
-                version = result.stdout.strip()
-                logger.info(f"yt-dlp version: {version}")
-            except Exception as e:
-                version = f"Error getting version: {e}"
-                logger.error(f"Failed to get yt-dlp version: {e}")
-            
-            # Test 2: Try to extract info from a simple video
-            test_url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
-            
-            try:
-                cmd = [sys.executable, '-m', 'yt_dlp', '--dump-json', '--no-playlist', test_url]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                
-                if result.returncode == 0:
-                    # Success - parse the JSON output
-                    import json
-                    try:
-                        video_info = json.loads(result.stdout)
-                        title = video_info.get('title', 'Unknown')
-                        duration = video_info.get('duration', 0)
-                        
-                        result_text = f"✅ yt-dlp Command Line Working!\n\n"
-                        result_text += f"Version: {version}\n"
-                        result_text += f"Video: {title}\n"
-                        if duration > 0:
-                            result_text += f"Duration: {duration//60}:{duration%60:02d}\n"
-                        result_text += f"\nThe command line version works, but the Python module doesn't.\n"
-                        result_text += f"This suggests a Python environment issue."
-                        
-                        self.show_test_result(result_text, "success")
-                        logger.info("yt-dlp command line test successful")
-                        
-                    except json.JSONDecodeError:
-                        result_text = f"✅ yt-dlp Command Line Working!\n\n"
-                        result_text += f"Version: {version}\n"
-                        result_text += f"Raw output: {result.stdout[:200]}...\n\n"
-                        result_text += f"The command line version works, but output format is unexpected."
-                        
-                        self.show_test_result(result_text, "success")
-                        logger.info("yt-dlp command line test successful (unexpected output format)")
-                        
-                else:
-                    # Command failed
-                    error_output = result.stderr
-                    result_text = f"❌ yt-dlp Command Line Failed!\n\n"
-                    result_text += f"Version: {version}\n"
-                    result_text += f"Error: {error_output}\n\n"
-                    result_text += f"This confirms yt-dlp is completely broken.\n"
-                    result_text += f"Try: pip uninstall yt-dlp && pip install yt-dlp --upgrade"
-                    
-                    self.show_test_result(result_text, "error")
-                    logger.error(f"yt-dlp command line test failed: {error_output}")
-                    
-            except subprocess.TimeoutExpired:
-                result_text = f"❌ yt-dlp Command Line Test Timed Out!\n\n"
-                result_text += f"Version: {version}\n"
-                result_text += f"The command took too long to complete.\n"
-                result_text += f"This suggests network or YouTube access issues."
-                
-                self.show_test_result(result_text, "error")
-                logger.error("yt-dlp command line test timed out")
-                
-            except Exception as e:
-                result_text = f"❌ yt-dlp Command Line Test Error!\n\n"
-                result_text += f"Version: {version}\n"
-                result_text += f"Error: {str(e)}\n\n"
-                result_text += f"This suggests a system-level problem with yt-dlp."
-                
-                self.show_test_result(result_text, "error")
-                logger.error(f"yt-dlp command line test error: {e}")
-                
-        except Exception as e:
-            result_text = f"❌ yt-dlp Command Line Test Failed!\n\n"
-            result_text += f"Unexpected error: {str(e)}\n\n"
-            result_text += f"This suggests a fundamental problem with the test."
-            
-            self.show_test_result(result_text, "error")
-            logger.error(f"yt-dlp command line test unexpected error: {e}")
-            
-        finally:
-            self.status_label.config(text="Ready")
-            self.progressbar['value'] = 0
-
-    def diagnose_python_environment(self):
-        """Diagnose Python environment issues"""
-        self.status_label.config(text="Diagnosing Python environment...")
-        self.progressbar['value'] = 0
-        
-        # Run diagnosis in separate thread
-        diag_thread = threading.Thread(target=self._diagnose_python_environment_worker)
-        diag_thread.start()
-    
-    def _diagnose_python_environment_worker(self):
-        """Worker thread to diagnose Python environment"""
-        try:
-            import sys
-            import subprocess
-            import importlib.util
-            
-            diagnosis = []
-            diagnosis.append("🔍 Python Environment Diagnosis")
-            diagnosis.append("=" * 50)
-            
-            # 1. Python version and executable
-            diagnosis.append(f"\n🐍 Python Version: {sys.version}")
-            diagnosis.append(f"🐍 Python Executable: {sys.executable}")
-            diagnosis.append(f"🐍 Python Path: {sys.path[0]}")
-            
-            # 2. Check if yt-dlp module can be imported
-            try:
-                import yt_dlp
-                diagnosis.append(f"\n✅ yt-dlp Module Import: SUCCESS")
-                diagnosis.append(f"📦 Module Location: {yt_dlp.__file__}")
-                diagnosis.append(f"📦 Module Version: {yt_dlp.version.__version__}")
-            except ImportError as e:
-                diagnosis.append(f"\n❌ yt-dlp Module Import: FAILED")
-                diagnosis.append(f"🚨 Error: {e}")
-            except Exception as e:
-                diagnosis.append(f"\n⚠️ yt-dlp Module Import: ERROR")
-                diagnosis.append(f"🚨 Error: {e}")
-            
-            # 3. Check pip list for yt-dlp
-            try:
-                result = subprocess.run([sys.executable, '-m', 'pip', 'list'], 
-                                      capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    pip_output = result.stdout
-                    if 'yt-dlp' in pip_output:
-                        # Extract yt-dlp version from pip list
-                        for line in pip_output.split('\n'):
-                            if 'yt-dlp' in line:
-                                diagnosis.append(f"\n📦 Pip List yt-dlp: {line.strip()}")
-                                break
-                    else:
-                        diagnosis.append(f"\n❌ Pip List yt-dlp: NOT FOUND")
-                else:
-                    diagnosis.append(f"\n⚠️ Pip List: FAILED - {result.stderr}")
-            except Exception as e:
-                diagnosis.append(f"\n⚠️ Pip List Check: ERROR - {e}")
-            
-            # 4. Check sys.modules for yt-dlp
-            if 'yt_dlp' in sys.modules:
-                diagnosis.append(f"\n📚 Sys Modules yt-dlp: LOADED")
-                diagnosis.append(f"📚 Module Object: {sys.modules['yt_dlp']}")
-            else:
-                diagnosis.append(f"\n❌ Sys Modules yt-dlp: NOT LOADED")
-            
-            # 5. Check importlib for yt-dlp
-            try:
-                spec = importlib.util.find_spec('yt_dlp')
-                if spec:
-                    diagnosis.append(f"\n🔍 Importlib yt-dlp: FOUND")
-                    diagnosis.append(f"🔍 Spec Location: {spec.origin}")
-                    diagnosis.append(f"🔍 Spec Loader: {spec.loader}")
-                else:
-                    diagnosis.append(f"\n❌ Importlib yt-dlp: NOT FOUND")
-            except Exception as e:
-                diagnosis.append(f"\n⚠️ Importlib Check: ERROR - {e}")
-            
-            # 6. Check if there are multiple Python installations
-            try:
-                result = subprocess.run(['which', 'python'], capture_output=True, text=True, timeout=5)
-                if result.returncode == 0:
-                    which_python = result.stdout.strip()
-                    diagnosis.append(f"\n🔍 System Python: {which_python}")
-                    if which_python != sys.executable:
-                        diagnosis.append(f"⚠️ WARNING: System Python differs from current Python!")
-                        diagnosis.append(f"   System: {which_python}")
-                        diagnosis.append(f"   Current: {sys.executable}")
-                else:
-                    diagnosis.append(f"\n🔍 System Python: NOT FOUND")
-            except Exception as e:
-                diagnosis.append(f"\n⚠️ System Python Check: ERROR - {e}")
-            
-            # 7. Check virtual environment
-            if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
-                diagnosis.append(f"\n🌍 Virtual Environment: ACTIVE")
-                diagnosis.append(f"🌍 Base Prefix: {getattr(sys, 'base_prefix', 'N/A')}")
-                diagnosis.append(f"🌍 Real Prefix: {getattr(sys, 'real_prefix', 'N/A')}")
-            else:
-                diagnosis.append(f"\n🌍 Virtual Environment: NOT ACTIVE")
-                diagnosis.append(f"🌍 Prefix: {sys.prefix}")
-            
-            # 8. Summary and recommendations
-            diagnosis.append(f"\n" + "=" * 50)
-            diagnosis.append("💡 RECOMMENDATIONS:")
-            
-            if 'yt_dlp' in sys.modules:
-                diagnosis.append("✅ yt-dlp module is loaded - the issue might be elsewhere")
-            else:
-                diagnosis.append("❌ yt-dlp module cannot be imported")
-                diagnosis.append("   Try: pip install yt-dlp --upgrade --force-reinstall")
-                diagnosis.append("   Or: python -m pip install yt-dlp --upgrade --force-reinstall")
-            
-            if 'Virtual Environment: ACTIVE' in '\n'.join(diagnosis):
-                diagnosis.append("🌍 You're in a virtual environment")
-                diagnosis.append("   Make sure to install yt-dlp in the SAME environment")
-            
-            # Show the diagnosis
-            self.show_diagnosis_result('\n'.join(diagnosis))
-            
-        except Exception as e:
-            error_msg = f"❌ Diagnosis Failed!\n\nError: {str(e)}\n\nThis suggests a fundamental problem with the diagnostic function."
-            self.show_test_result(error_msg, "error")
-            logger.error(f"Python environment diagnosis failed: {e}")
-        finally:
-            self.status_label.config(text="Ready")
-            self.progressbar['value'] = 0
-    
-    def show_diagnosis_result(self, diagnosis_text):
-        """Show the diagnosis result in a new window"""
-        # Create a new window
-        result_window = tk.Toplevel(self.root)
-        result_window.title("Python Environment Diagnosis")
-        result_window.geometry("700x600")
-        result_window.configure(bg="#BFBFBF")
-        
-        # Add title
-        title_label = tk.Label(result_window, text="Python Environment Diagnosis", 
-                              bg="#BFBFBF", fg="#000080", font=("Helvetica", 14, "bold"))
-        title_label.pack(pady=10)
-        
-        # Add scrollable text area
-        text_frame = tk.Frame(result_window, bg="#BFBFBF")
-        text_frame.pack(fill="both", expand=True, padx=20, pady=10)
-        
-        text_widget = tk.Text(text_frame, wrap="word", bg="white", fg="black", 
-                             font=("Courier", 9), height=25)
-        scrollbar = tk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
-        text_widget.configure(yscrollcommand=scrollbar.set)
-        
-        text_widget.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Insert the diagnosis text
-        text_widget.insert("1.0", diagnosis_text)
-        text_widget.config(state="disabled")  # Make read-only
-        
-        # Add close button
-        close_button = tk.Button(result_window, text="Close", bg="#D4D0C8", fg="black",
-                                relief="ridge", font=("Helvetica", 12, "bold"),
-                                command=result_window.destroy)
-        close_button.pack(pady=10)
-
     def browse_cookie_file(self):
         """
         Opens a file dialog to select a cookie file.
@@ -1308,18 +929,6 @@ class MyGUI:
         if file_path:
             self.cookie_file_path.set(file_path)
             logger.info(f"Selected cookie file: {file_path}")
-
-    def toggle_advanced_tools(self):
-        """
-        Toggles the visibility of the advanced tools section.
-        """
-        if self.advanced_expanded:
-            self.advanced_content.pack_forget()
-            self.advanced_toggle.config(text="🔧 Advanced Tools")
-        else:
-            self.advanced_content.pack(fill="x", pady=(5, 0))
-            self.advanced_toggle.config(text="🔓 Collapse Advanced Tools")
-        self.advanced_expanded = not self.advanced_expanded
 
     def _on_mousewheel(self, event):
         """
