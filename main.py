@@ -74,14 +74,23 @@ class MyGUI:
         self.scrollable_frame.bind("<Configure>", on_frame_configure)
         self.main_canvas.bind("<Configure>", on_canvas_configure)
         
-        # Start building the UI inside the scrollable frame
-        frame = tk.Frame(self.scrollable_frame, bg="#BFBFBF")
-        frame.pack(fill="both", expand=False, padx=20, pady=10)
-        image_label = tk.Label(frame, image=self.logo, bg="#BFBFBF")
-        image_label.pack(side="top", anchor="center")
-        tk.Label(frame, text="Convert2mp3",bg="#BFBFBF", fg="#000080", font=("Helvetica", 15, "bold")).pack(side="top", anchor="center") 
+        # Shared Windows-95-style look, kept as one set of constants so every
+        # widget in the form uses the same palette/spacing/relief consistently.
+        BG = "#BFBFBF"
+        BTN_BG = "#D4D0C8"
+        ACCENT = "#000080"
+        FONT_LABEL = ("Helvetica", 10, "bold")
+        FONT_BUTTON = ("Helvetica", 12, "bold")
+        FONT_BUTTON_SMALL = ("Helvetica", 11)
+        GROUP_KW = dict(bg=BG, fg="black", relief="groove", bd=2, font=FONT_LABEL)
+        SECTION_GAP = 10
 
-        #tk.Label(self.root, image=self.logo, ).pack(pady=5, padx=5, anchor="nw", side="left")
+        # Start building the UI inside the scrollable frame
+        header_frame = tk.Frame(self.scrollable_frame, bg=BG)
+        header_frame.pack(fill="both", expand=False, padx=20, pady=10)
+        image_label = tk.Label(header_frame, image=self.logo, bg=BG)
+        image_label.pack(side="top", anchor="center")
+        tk.Label(header_frame, text="Convert2mp3", bg=BG, fg=ACCENT, font=("Helvetica", 15, "bold")).pack(side="top", anchor="center")
 
         self.download_directory = ""
         self.downloading = False
@@ -90,117 +99,102 @@ class MyGUI:
         self.update_queue = queue.Queue()
 
         # Create main content frame
-        content_frame = tk.Frame(self.scrollable_frame, bg="#BFBFBF")
+        content_frame = tk.Frame(self.scrollable_frame, bg=BG)
         content_frame.pack(fill="both", expand=False, padx=20, pady=10)
 
-        tk.Label(content_frame, text="Enter YouTube URL:", bg="#BFBFBF", fg="black", font=("Helvetica", 10, "bold")).pack(pady=5, anchor="w")
+        tk.Label(content_frame, text="Enter YouTube URL:", bg=BG, fg="black", font=FONT_LABEL).pack(pady=(0, 4), anchor="w")
         self.url_entry = tk.Entry(content_frame, width=50)
-        self.url_entry.pack(pady=5)
+        self.url_entry.pack(pady=(0, SECTION_GAP))
 
-        tk.Label(content_frame, text="Destination Folder:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
-        self.destination_text = tk.Label(content_frame, width=60,text="please select a folder",font=("Helvetica", 10),  relief="sunken")
-        self.destination_text.pack(pady=5)
-        self.destination_button = tk.Button(content_frame, text="Select Folder", bg="#D4D0C8", fg="black", relief="ridge", font=("Helvetica", 11), command=self.set_destination_folder)
-        self.destination_button.pack(pady=5)
+        tk.Label(content_frame, text="Destination Folder:", bg=BG, fg="black", font=FONT_LABEL).pack(pady=(0, 4), anchor="w")
+        self.destination_text = tk.Label(content_frame, width=60, text="please select a folder", font=("Helvetica", 10), relief="sunken", bg="white")
+        self.destination_text.pack(pady=(0, 6))
+        self.destination_button = tk.Button(content_frame, text="Select Folder", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON_SMALL, command=self.set_destination_folder)
+        self.destination_button.pack(pady=(0, SECTION_GAP))
 
-        tk.Label(content_frame, text="Artist:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
-        self.artist_entry = tk.Entry(content_frame, width=50)
-        self.artist_entry.pack(pady=5)
+        # Metadata group
+        metadata_group = tk.LabelFrame(content_frame, text="Metadata (optional)", **GROUP_KW)
+        metadata_group.pack(fill="x", pady=(0, SECTION_GAP))
+        tk.Label(metadata_group, text="Artist:", bg=BG, fg="black").pack(pady=(6, 2), anchor="w", padx=8)
+        self.artist_entry = tk.Entry(metadata_group, width=48)
+        self.artist_entry.pack(pady=(0, 6), padx=8)
+        tk.Label(metadata_group, text="Album:", bg=BG, fg="black").pack(pady=(0, 2), anchor="w", padx=8)
+        self.album_entry = tk.Entry(metadata_group, width=48)
+        self.album_entry.pack(pady=(0, 8), padx=8)
 
-        tk.Label(content_frame, text="Album:", bg="#BFBFBF", fg="black" ).pack(pady=5, anchor="w")
-        self.album_entry = tk.Entry(content_frame, width=50)
-        self.album_entry.pack(pady=5)
-
-        # Add quality selection
-        tk.Label(content_frame, text="Audio Quality:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
+        # Audio quality group
+        quality_group = tk.LabelFrame(content_frame, text="Audio Quality", **GROUP_KW)
+        quality_group.pack(fill="x", pady=(0, SECTION_GAP))
         self.quality_var = tk.StringVar(value="128")
-        quality_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        quality_frame.pack(pady=5)
-        
-        tk.Radiobutton(quality_frame, text="128 kbps", variable=self.quality_var, value="128", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(quality_frame, text="192 kbps", variable=self.quality_var, value="192", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(quality_frame, text="320 kbps", variable=self.quality_var, value="320", bg="#BFBFBF").pack(side="left")
+        for text, value in (("128 kbps", "128"), ("192 kbps", "192"), ("320 kbps", "320")):
+            tk.Radiobutton(quality_group, text=text, variable=self.quality_var, value=value, bg=BG).pack(side="left", padx=8, pady=6)
 
-        # Add conversion speed preference
-        tk.Label(content_frame, text="Conversion Speed:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
+        # Conversion speed group
+        speed_group = tk.LabelFrame(content_frame, text="Conversion Speed", **GROUP_KW)
+        speed_group.pack(fill="x", pady=(0, SECTION_GAP))
         self.conversion_speed = tk.StringVar(value="fast")
-        conversion_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        conversion_frame.pack(pady=5)
-        
-        tk.Radiobutton(conversion_frame, text="Fast", variable=self.conversion_speed, value="fast", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(conversion_frame, text="Balanced", variable=self.conversion_speed, value="balanced", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(conversion_frame, text="High Quality", variable=self.conversion_speed, value="quality", bg="#BFBFBF").pack(side="left")
+        for text, value in (("Fast", "fast"), ("Balanced", "balanced"), ("High Quality", "quality")):
+            tk.Radiobutton(speed_group, text=text, variable=self.conversion_speed, value=value, bg=BG).pack(side="left", padx=8, pady=6)
 
-        # Add download speed preference
-        speed_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        speed_frame.pack(pady=5)
-        self.fast_download = tk.BooleanVar(value=True)
-        tk.Checkbutton(speed_frame, text="Fast Download (avoid HLS)", variable=self.fast_download, 
-                      bg="#BFBFBF", selectcolor="#D4D0C8").pack(side="left")
-        
-        # Add cookie usage preference
-        cookie_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        cookie_frame.pack(pady=5)
-        self.use_cookies = tk.BooleanVar(value=False)  # Default to False to avoid keychain requests
-        tk.Checkbutton(cookie_frame, text="Use Browser Cookies (may require keychain access)", 
-                      variable=self.use_cookies, bg="#BFBFBF", selectcolor="#D4D0C8").pack(side="left")
-        
-        # Add manual cookie file option
-        cookie_file_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        cookie_file_frame.pack(pady=5)
-        self.use_cookie_file = tk.BooleanVar(value=False)
-        tk.Checkbutton(cookie_file_frame, text="Use Cookie File (manual export)", 
-                      variable=self.use_cookie_file, bg="#BFBFBF", selectcolor="#D4D0C8").pack(side="left")
-        
-        # Cookie file path entry
-        self.cookie_file_path = tk.StringVar()
-        cookie_path_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        cookie_path_frame.pack(pady=2)
-        tk.Label(cookie_path_frame, text="Cookie File Path:", bg="#BFBFBF", fg="black").pack(side="left")
-        tk.Entry(cookie_path_frame, textvariable=self.cookie_file_path, width=30).pack(side="left", padx=5)
-        tk.Button(cookie_path_frame, text="Browse", bg="#D4D0C8", fg="black", 
-                 command=self.browse_cookie_file).pack(side="left")
-
-        # Add format preference
-        tk.Label(content_frame, text="Format Preference:", bg="#BFBFBF", fg="black").pack(pady=5, anchor="w")
+        # Format preference + fast-download behaviour group (these two settings interact)
+        format_group = tk.LabelFrame(content_frame, text="Format & Download Behavior", **GROUP_KW)
+        format_group.pack(fill="x", pady=(0, SECTION_GAP))
         self.format_var = tk.StringVar(value="auto")
-        format_frame = tk.Frame(content_frame, bg="#BFBFBF")
-        format_frame.pack(pady=5)
-        
-        tk.Radiobutton(format_frame, text="Auto (Smart)", variable=self.format_var, value="auto", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(format_frame, text="Direct (Fast)", variable=self.format_var, value="direct", bg="#BFBFBF").pack(side="left")
-        tk.Radiobutton(format_frame, text="HLS (Compatible)", variable=self.format_var, value="hls", bg="#BFBFBF").pack(side="left")
+        format_radios = tk.Frame(format_group, bg=BG)
+        format_radios.pack(fill="x", padx=8, pady=(6, 2))
+        for text, value in (("Auto (Smart)", "auto"), ("Direct (Fast)", "direct"), ("HLS (Compatible)", "hls")):
+            tk.Radiobutton(format_radios, text=text, variable=self.format_var, value=value, bg=BG).pack(side="left")
+        self.fast_download = tk.BooleanVar(value=True)
+        tk.Checkbutton(format_group, text="Fast Download (avoid HLS)", variable=self.fast_download,
+                       bg=BG, selectcolor=BTN_BG).pack(anchor="w", padx=8, pady=(0, 8))
 
-        buttonframe = tk.Frame(content_frame, bg="#BFBFBF")
+        # Authentication group (cookies)
+        auth_group = tk.LabelFrame(content_frame, text="Authentication (optional)", **GROUP_KW)
+        auth_group.pack(fill="x", pady=(0, SECTION_GAP))
+        self.use_cookies = tk.BooleanVar(value=False)  # Default to False to avoid keychain requests
+        tk.Checkbutton(auth_group, text="Use Browser Cookies (may require keychain access)",
+                       variable=self.use_cookies, bg=BG, selectcolor=BTN_BG).pack(anchor="w", padx=8, pady=(6, 2))
+        self.use_cookie_file = tk.BooleanVar(value=False)
+        tk.Checkbutton(auth_group, text="Use Cookie File (manual export)",
+                       variable=self.use_cookie_file, bg=BG, selectcolor=BTN_BG).pack(anchor="w", padx=8, pady=2)
+        self.cookie_file_path = tk.StringVar()
+        cookie_path_frame = tk.Frame(auth_group, bg=BG)
+        cookie_path_frame.pack(fill="x", padx=8, pady=(2, 8))
+        tk.Label(cookie_path_frame, text="Cookie File Path:", bg=BG, fg="black").pack(side="left")
+        tk.Entry(cookie_path_frame, textvariable=self.cookie_file_path, width=26).pack(side="left", padx=5)
+        tk.Button(cookie_path_frame, text="Browse", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON_SMALL,
+                  command=self.browse_cookie_file).pack(side="left")
+
+        buttonframe = tk.Frame(content_frame, bg=BG)
         buttonframe.columnconfigure(0, weight=1)
         buttonframe.columnconfigure(1, weight=1)
         buttonframe.columnconfigure(2, weight=1)
 
-        clear_button = tk.Button(buttonframe, text="Clear",bg="#D4D0C8", fg="black", relief="ridge", font=("Helvetica", 12, "bold"), command=self.clear)
+        clear_button = tk.Button(buttonframe, text="Clear", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON, command=self.clear)
         clear_button.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
-        
-        check_formats_button = tk.Button(buttonframe, text="Check Formats", bg="#D4D0C8", fg="black", relief="ridge", font=("Helvetica", 12, "bold"), command=self.check_available_formats)
-        check_formats_button.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
-        
-        self.download_button = tk.Button(buttonframe, text="Download MP3", bg="#D4D0C8", fg="black" , relief="ridge", font=("Helvetica", 12, "bold"), command=self.start_download)
-        self.download_button.grid(row=0, column=2,sticky="ew", padx=5, pady=5)
 
-        buttonframe.pack(pady=10)
-        
+        check_formats_button = tk.Button(buttonframe, text="Check Formats", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON, command=self.check_available_formats)
+        check_formats_button.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+
+        self.download_button = tk.Button(buttonframe, text="Download MP3", bg=BTN_BG, fg="black", relief="ridge", font=FONT_BUTTON, command=self.start_download)
+        self.download_button.grid(row=0, column=2, sticky="ew", padx=5, pady=5)
+
+        buttonframe.pack(fill="x", pady=(0, 6))
+
         # Add cancel button (inside content_frame, not root)
-        self.cancel_button = tk.Button(content_frame, text="Cancel", bg="#FF6B6B", fg="white", 
-                                      relief="ridge", font=("Helvetica", 12, "bold"), 
+        self.cancel_button = tk.Button(content_frame, text="Cancel", bg="#FF6B6B", fg="white",
+                                      relief="ridge", font=FONT_BUTTON,
                                       command=self.cancel_download_process)
-        self.cancel_button.pack(pady=5)
+        self.cancel_button.pack(pady=(0, SECTION_GAP))
         self.cancel_button.config(state="disabled")
 
-        # Replace indeterminate progress bar with determinate one
+        # Progress bar - determinate while downloading, indeterminate during conversion
         self.progressbar = ttk.Progressbar(content_frame, orient="horizontal", length=200, mode="determinate", style="TProgressbar")
-        self.progressbar.pack(pady=10)
-        
+        self.progressbar.pack(pady=(0, 6))
+
         # Add status label
-        self.status_label = tk.Label(content_frame, text="Ready", bg="#BFBFBF", fg="black")
-        self.status_label.pack(pady=5)
+        self.status_label = tk.Label(content_frame, text="Ready", bg=BG, fg="black")
+        self.status_label.pack(pady=(0, 4))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
